@@ -42,7 +42,7 @@ properties:
                         description: Flag to only generate an OpenFAST model and stop
                     save_timeseries:
                         type: boolean
-                        default: False
+                        default: True
                         description: Save openfast output timeseries
                     keep_time:
                         type: boolean
@@ -50,7 +50,7 @@ properties:
                         description: Keep timeseries in openmdao_openfast for post-processing
                     save_iterations:
                         type: boolean
-                        default: False
+                        default: True
                         description: Save summary stats and other info for each openfast iteration.  Could bump this up to a more global post-processing input.
                     FAST_exe:
                         type: string
@@ -777,7 +777,7 @@ properties:
                         description: Time interval for aerodynamic calculations. Set it to 0. for default (same as main fst)
                     WakeMod:
                         type: integer
-                        enum: [0, 1, 2, 3]
+                        enum: [0, 1, 2, 3, 11, 12, 13]
                         default: 1
                         description: Type of wake/induction model (switch) {0=none, 1=BEMT, 3=OLAF}
                     AFAeroMod:
@@ -2799,6 +2799,10 @@ properties:
                 type: boolean
                 default: False
                 description: Whether we derive OpenFAST model from an existing model and ignore WISDEM
+            regulation_trajectory: 
+                type: string
+                default: unused
+                description: Only used if from_openfast is set to True. Path to yaml file containing output data of the turbine tabulated against wind speed (rotor speed, blade pitch angle, aero thrust coefficient) needed to initialize the OpenFAST model through
             openfast_file: 
                 type: string
                 default: unused

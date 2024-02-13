@@ -1,0 +1,1 @@
+These examples demonstrate how to use Level 2, linearized OpenFAST, in a CCD study.
