@@ -2757,23 +2757,30 @@ class InputReader_OpenFAST(object):
 
             elif 'options' in data_line:
 
+                # MoorDyn lets options be written in any order
                 # Solver options
-                self.fst_vt['MoorDyn']['dtM']       = float_read(f.readline().split()[0])
-                self.fst_vt['MoorDyn']['kbot']      = float_read(f.readline().split()[0])
-                self.fst_vt['MoorDyn']['cbot']      = float_read(f.readline().split()[0])
-                self.fst_vt['MoorDyn']['dtIC']      = float_read(f.readline().split()[0])
-                self.fst_vt['MoorDyn']['TmaxIC']    = float_read(f.readline().split()[0])
-                self.fst_vt['MoorDyn']['CdScaleIC'] = float_read(f.readline().split()[0])
-                self.fst_vt['MoorDyn']['threshIC']  = float_read(f.readline().split()[0])
-                self.fst_vt['MoorDyn']['WaterKin']  = f.readline().split()[0]
-                f.readline()
+                self.fst_vt['MoorDyn']['options'] = []  # keep list of MoorDyn options
 
-                data = f.readline()
-                while data.split()[0] != 'END':
-                    channels = data.strip().strip('"').strip("'")
-                    channel_list = channels.split(',')
-                    self.set_outlist(self.fst_vt['outlist']['MoorDyn'], channel_list)
-                    data = f.readline()
+                string_options = ['WaterKin']
+
+                data_line = f.readline().strip().split()
+                while data_line[0] and data_line[0][:3] != '---': # OpenFAST searches for ---, so we'll do the same
+
+                    raw_value = data_line[0]
+                    option_name = data_line[1]
+
+                    self.fst_vt['MoorDyn']['options'].append(option_name)
+                    if option_name in string_options:
+                        self.fst_vt['MoorDyn'][option_name] = raw_value
+                    else:
+                        self.fst_vt['MoorDyn'][option_name] = float(raw_value)
+
+                    data_line = f.readline().strip().split()
+                data_line = ''.join(data_line)  # re-join for reading next section uniformly   
+
+            elif 'outputs' in data_line:
+
+                self.read_outlist(f,'MoorDyn')
 
                 f.close()
                 break
