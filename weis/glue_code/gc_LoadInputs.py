@@ -61,6 +61,7 @@ class WindTurbineOntologyPythonWEIS(WindTurbineOntologyPython):
                 
             if self.modeling_options['General']['openfast_configuration']['OF_run_dir'] in ['','None','NONE','none']:
                 self.modeling_options['General']['openfast_configuration']['OF_run_dir'] = osp.join(
+                    mod_opt_dir,
                     self.analysis_options['general']['folder_output'], 
                     'openfast_runs'
                     )
