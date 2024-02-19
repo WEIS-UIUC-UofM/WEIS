@@ -7,12 +7,8 @@ import numpy as np
 from functools import reduce
 
 from weis.aeroelasticse.FAST_reader import InputReader_OpenFAST
+from rosco.toolbox.utilities import write_rotor_performance, write_DISCON
 
-try:
-    from rosco.toolbox import utilities as ROSCO_utilities
-    ROSCO = True
-except:
-    ROSCO = False
 
 
 def auto_format(f, var):
@@ -162,7 +158,7 @@ class InputWriter_OpenFAST(object):
             self.write_AeroDyn15()
         
         if self.fst_vt['Fst']['CompServo'] == 1:
-	        if 'DISCON_in' in self.fst_vt and ROSCO:
+	        if 'DISCON_in' in self.fst_vt:
 	            self.write_DISCON_in()
 	        self.write_ServoDyn()
 	        for i_NStC, NStC in enumerate(self.fst_vt['NStC']):
@@ -1445,12 +1441,12 @@ class InputWriter_OpenFAST(object):
         self.fst_vt['DISCON_in']['PerfFileName'] = self.FAST_namingOut + '_Cp_Ct_Cq.txt'
         
         # Write DISCON input files
-        ROSCO_utilities.write_rotor_performance(
+        write_rotor_performance(
             turbine, 
             txt_filename=os.path.join(self.FAST_runDirectory, self.fst_vt['DISCON_in']['PerfFileName'])
             )
         
-        ROSCO_utilities.write_DISCON(
+        write_DISCON(
             turbine,
             controller,
             param_file=discon_in_file, 
