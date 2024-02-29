@@ -777,6 +777,7 @@ class FASTLoadCases(ExplicitComponent):
         fst_vt['InflowWind']        = {}
         fst_vt['SubDyn']            = {}
         fst_vt['HydroDyn']          = {}
+        fst_vt['SeaState']          = {}
         fst_vt['MoorDyn']           = {}
         fst_vt['MAP']               = {}
         
@@ -830,6 +831,10 @@ class FASTLoadCases(ExplicitComponent):
         if 'HydroDyn' in modeling_options['Level3']:    
             for key in modeling_options['Level3']['HydroDyn']:
                 fst_vt['HydroDyn'][key] = modeling_options['Level3']['HydroDyn'][key]
+
+        if 'SeaState' in modeling_options['Level3']:    
+            for key in modeling_options['Level3']['SeaState']:
+                fst_vt['SeaState'][key] = modeling_options['Level3']['SeaState'][key]
 
         if 'MoorDyn' in modeling_options['Level3']:    
             for key in modeling_options['Level3']['MoorDyn']:
@@ -1934,12 +1939,7 @@ class FASTLoadCases(ExplicitComponent):
         case_inputs[("ElastoDyn","Azimuth")] = {'vals':azimuth_init, 'group':1}
         # Yaw offset
         case_inputs[("ElastoDyn","NacYaw")] = {'vals':yaw_misalignment, 'group':1}
-        # Inputs to HydroDyn
-        case_inputs[("HydroDyn","WaveHs")] = {'vals':WaveHs, 'group':1}
-        case_inputs[("HydroDyn","WaveTp")] = {'vals':WaveTp, 'group':1}
-        case_inputs[("HydroDyn","WaveDir")] = {'vals':WaveHd, 'group':1}
-        case_inputs[("HydroDyn","WavePkShp")] = {'vals':WaveGamma, 'group':1}
-        case_inputs[("HydroDyn","WaveSeed1")] = {'vals':WaveSeed1, 'group':1}
+
         # Inputs to ServoDyn (parking), PitManRat and BlPitchF are ServoDyn modeling_options
         case_inputs[("ServoDyn","TPitManS1")] = {'vals':shutdown_time, 'group':1}
         case_inputs[("ServoDyn","TPitManS2")] = {'vals':shutdown_time, 'group':1}
@@ -1956,6 +1956,14 @@ class FASTLoadCases(ExplicitComponent):
         case_inputs[("AeroDyn15","OLAF","nNWPanelsFree")] = {'vals':nNWPanelsFree, 'group':1} 
         case_inputs[("AeroDyn15","OLAF","nFWPanels")] = {'vals':nFWPanels, 'group':1}
         case_inputs[("AeroDyn15","OLAF","nFWPanelsFree")] = {'vals':nFWPanelsFree, 'group':1}
+        
+        # Inputs to SeaState
+        case_inputs[("SeaState","WaveMod")] = {'vals':[2], 'group':0}
+        case_inputs[("SeaState","WaveHs")] = {'vals':WaveHs, 'group':1}
+        case_inputs[("SeaState","WaveTp")] = {'vals':WaveTp, 'group':1}
+        case_inputs[("SeaState","WaveDir")] = {'vals':WaveHd, 'group':1}
+        case_inputs[("SeaState","WavePkShp")] = {'vals':WaveGamma, 'group':1}
+        case_inputs[("SeaState","WaveSeed1")] = {'vals':WaveSeed1, 'group':1} 
 
         # DLC Label add these for the case matrix and delete from the case_list
         case_inputs[("DLC","Label")] = {'vals':dlc_label, 'group':1}
