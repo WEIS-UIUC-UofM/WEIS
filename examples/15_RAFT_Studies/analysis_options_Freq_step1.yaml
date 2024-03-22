@@ -1,0 +1,154 @@
+general:
+    folder_output: outputs/15_RAFT_optimization_freq_step1
+    fname_output: refturb_output
+
+design_variables:
+  #control:
+  #  ps_percent: #Peak shaving
+  #    flag: True
+  #    lower_bound: 0.75
+  #    upper_bound: 1.0
+  floating:
+    members:
+      flag: True
+      groups:
+        - names: [main_column] # Platform sizing: diameter (Center Column)
+          diameter:
+            lower_bound: 6.0 #default: 10
+            upper_bound: 14.0
+            constant: True
+        - names: [column1, column2, column3] # Platform sizing: diameter (Side Columns)
+          diameter:
+            lower_bound: 10.7 #8.5 # default: 12.5
+            upper_bound: 16.5
+            constant: True
+    joints:
+      flag: True
+      #z_coordinate:
+      #  - names: [main_keel, col1_keel, col2_keel, col3_keel] #Platform sizing: Spacing (Length of columns is kept fixed) : form -20 (keel) to 15 (freeboard)
+      #    lower_bound: -20.0
+      #    upper_bound: -20.0
+      r_coordinate:
+        - names: [col1_keel, col1_freeboard, col2_keel, col2_freeboard, col3_keel, col3_freeboard] #Platform sizing: Spacing
+          lower_bound: 40.35 #40.0
+          upper_bound: 64.35 #60.0
+  #rotor_diameter:
+  #  flag: True
+  #  minimum: 235.0 #242.23775645
+  #  maximum: 250.0
+  #tower:
+  #  outer_diameter:
+  #    flag: True
+  #    lower_bound: 6.0 # 6.5[m]
+  #    upper_bound: 7.0
+  #  section_height:
+  #    flag: True
+  #    lower_bound: 13.0 # 5.0[m] I think in default it has 10 sections: 10 *15=150==hub height
+  #    upper_bound: 18.0
+
+  # control:
+  #   servo:
+  #     pitch_control:
+  #       omega:
+  #         flag: True
+  #         min: 0.1
+  #         max: 0.5
+
+  #floating:
+  #  joints:
+  #    flag: True
+  #    z_coordinate:
+  #      - names: [main_keel, col1_keel, col2_keel, col3_keel]
+  #        lower_bound: -40.0
+  #        upper_bound: -15.0
+  #    r_coordinate:
+  #      - names: [col1_keel, col1_freeboard, col2_keel, col2_freeboard, col3_keel, col3_freeboard]
+  #        lower_bound: 38.8125
+  #        upper_bound: 64.6875
+  #  members:
+  #    flag: True
+  #    groups:
+  #      - names: [column1,column2,column3]
+  #        diameter:
+  #          lower_bound: 9.375
+  #          upper_bound: 15.625
+  #          constant: True
+  #        thickness:
+  #          lower_bound: 0.05
+  #          upper_bound: 0.25
+  #          constant: True
+          # - names: [Y_pontoon_lower1, Y_pontoon_lower2, Y_pontoon_lower3]
+          #   diameter:
+          #     lower_bound: 7.5
+          #     upper_bound: 12.5
+          
+constraints:
+  control:
+    Max_PtfmPitch:
+      flag: True
+      max:  6.757845 #6.74303  #deg
+    Std_PtfmPitch:
+      flag: False
+      max: 2.0 #deg
+    nacelle_acceleration:
+      flag: False
+      max: 3.2667 # m/s^2
+  tower:
+    height_constraint:
+      flag: False
+      lower_bound: 0.1
+      upper_bound: 5.0
+    slope:
+      flag: False
+  
+
+
+#constraints:
+#  control:
+#    rotor_overspeed:
+#      flag: True
+#      min: 0.0
+#      max: 0.25
+#    Max_PtfmPitch:
+#      flag: True
+#      max: 5.5
+#    Std_PtfmPitch:
+#      flag: False
+#      max: 2.
+#  Max_Offset:
+#    flag: True
+#    max: 30.
+#  floating:
+#    stress: 
+#      flag: True
+#    global_buckling: 
+#      flag: True
+#    shell_buckling: 
+#      flag: True
+
+merit_figure: platform_mass  # Merit figure of the optimization problem. The options are 'AEP' - 'LCOE' - 'Cp' - 'blade_mass' - 'blade_tip_deflection'
+
+
+driver:
+  optimization:
+    flag: True           # Flag to enable optimization
+    solver: GA #LN_COBYLA         # Optimization solver. Other options are 'SLSQP' - 'CONMIN'
+    tol: 1.e-2            # Optimality tolerance
+    max_iter: 200          # Maximum number of iterations (SLSQP)
+  design_of_experiments:
+     flag: False            # Flag to enable design of experiments
+     run_parallel: True    # Flag to run using parallel processing
+     seed: 2
+     generator: FullFact #FullFact    # Type of input generator. (Uniform)
+     num_samples: 41 #41        # number of samples for (Uniform only)
+     levels: 1
+
+recorder:
+  flag: True              # Flag to activate OpenMDAO recorder
+  file_name: log_opt.sql  # Name of OpenMDAO recorder
+  #just_dvs: True
+  #includes: ['*'] #['*raft*','*floating*','*platform*']
+  #includes: ['*raft*','*floating*','*platform*',  '*financese*','*rotorse*', '*tower_grid*', '*tune_rosco_ivc*', '*towerse*', '*configuration*', '*tower*', '*tcc*']
+  includes : ['*floating.memgrp0.outer_diameter_in*', '*floating.memgrp1.outer_diameter_in*', '*towerse.tower_section_height*', '*tower_grid.height*', '*tune_rosco_ivc.ps_percent*', '*floating.joints_xyz*', '*floating.joints_xyz*', '*floating.joints_xyz*', '*floating.joints_xyz*', '*configuration.rotor_diameter_user*', '*tower.diameter*', '*raft.Max_PtfmPitch*', '*raft.Std_PtfmPitch*', '*towerse.height_constraint*', '*towerse.slope*', '*raft.response_nacelle acceleration*', '*raft.platform_mass*', '*rotorse.rp.AEP*', '*tcc.turbine_cost*', '*tcc.turbine_cost_kW*', '*tcc.turbine_mass_tcc*', '*financese.lcoe*', '*rotorse.rp.powercurve.Cp*', '*rotorse.blade_mass*', '*towerse.tower_mass*', '*tcc.tower_cost*', '*floatingse.system_structural_mass*', '*floatingse.member0.structural_cost*', '*floatingse.member1.structural_cost*', '*towerse.tower.top_deflection*', '*towerse.tower.tower_deflection*']
+
+
