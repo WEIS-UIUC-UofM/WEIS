@@ -1,0 +1,430 @@
+general:
+    folder_output: outputs/15_RAFT_Studies_Saeid
+    fname_output: refturb_output
+
+
+design_variables:
+  control:
+    ps_percent:
+      flag: False
+      minimum: 0.80
+      maximum: 0.95
+    tsr:
+      flag: True
+      minimum: 0.0
+      maximum: 30.0
+    servo:
+      pitch_control:
+        omega:
+          flag: True
+          min: 0.1
+          max: 0.5
+        zeta:
+          flag: False
+          min: 0.1
+          max: 0.5
+        Kp_float:
+          flag: False
+          min: 0.1
+          max: 0.5
+        ptfm_freq:
+          flag: False
+          min: 0.1
+          max: 0.5
+      torque_control:
+        omega:
+          flag: False
+          min: 0.1
+          max: 0.5
+        zeta:
+          flag: False
+          min: 0.1
+          max: 0.5
+      flap_control:
+        flp_kp_norm:
+          flag: False
+          min: 0.1
+          max: 0.5
+        flp_tau:
+          flag: False
+          min: 0.1
+          max: 0.5
+    flaps:
+      te_flap_end:
+        flag: False
+          min: 0.1
+          max: 0.5
+      te_flap_ext:
+        flag: False
+          min: 0.1
+          max: 0.5
+  hub:
+    cone:
+      flag: True
+      lower_bound: 0.0
+      upper_bound: 0.5235987756
+    hub_diameter:
+      flag: True
+      lower_bound: 10.0
+      upper_bound: 50.0
+  
+  drivetrain:
+    uptilt:
+      flag: True
+      lower_bound: 0.0
+      upper_bound: 0.5235987756
+    overhang:
+      flag: True
+      lower_bound: 0.1
+      upper_bound: 30.0
+    distance_tt_hub:
+      flag: True
+      lower_bound: 0.1
+      upper_bound: 30.0
+    distance_hub_mb:
+      flag: True
+      lower_bound: 0.1
+      upper_bound: 30.0
+    distance_mb_mb:
+      flag: True
+      lower_bound: 0.1
+      upper_bound: 30.0
+    generator_length:
+      flag: True
+      lower_bound: 0.1
+      upper_bound: 30.0
+    gear_ratio:
+      flag: True
+      lower_bound: 1.0
+      upper_bound: 150.0
+    lss_diameter:
+      flag: True
+      lower_bound: 0.1
+      upper_bound: 30.0
+    hss_diameter:
+      flag: True
+      lower_bound: 0.1
+      upper_bound: 10.0
+    nose_diameter:
+      flag: True
+      lower_bound: 0.1
+      upper_bound: 1.0
+    lss_wall_thickness:
+      flag: True
+      lower_bound: 0.001
+      upper_bound: 1.0
+    hss_wall_thickness:
+      flag: True
+      lower_bound: 0.001
+      upper_bound: 1.0
+    nose_wall_thickness:
+      flag: True
+      lower_bound: 0.001
+      upper_bound: 1.0
+    bedplate_wall_thickness:
+      flag: True
+      lower_bound: 0.001
+      upper_bound: 1.0
+    bedplate_web_thickness:
+      flag: True
+      lower_bound: 0.001
+      upper_bound: 1.0
+    bedplate_flange_thickness:
+      flag: True
+      lower_bound: 0.001
+      upper_bound: 1.0
+    bedplate_flange_width:
+      flag: True
+      lower_bound: 0.001
+      upper_bound: 1.0
+
+  tower:
+    outer_diameter:
+      flag: True
+      lower_bound: 5.0
+      upper_bound: 6.0
+    layer_thickness:
+      flag: True
+      lower_bound: 0.01
+      upper_bound: 0.1
+    section_height:
+      flag: True
+      lower_bound: 5.0
+      upper_bound: 6.0
+
+  monopile:
+    outer_diameter:
+      flag: True
+      lower_bound: 5.0
+      upper_bound: 6.0
+    layer_thickness:
+      flag: True
+      lower_bound: 0.01
+      upper_bound: 0.1
+    section_height:
+      flag: True
+      lower_bound: 5.0
+      upper_bound: 6.0
+
+  rotor_diameter:
+    flag: True
+    minimum: 50.0
+    maximum: 180.0
+
+  blade:
+    aero_shape:
+      twist:
+        flag: True 
+        inverse: False
+        n_opt: 8
+        lower_bound: [-0.1, -0.1, -0.1, -0.1, -0.1, -0.1, -0.1, -0.1]
+        upper_bound: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+        index_start: 0
+        index_end: 8
+      chord:
+        flag: True
+        n_opt: 8
+        max_decrease: 0.5
+        max_increase: 1.5
+        index_start: 0
+        index_end: 8
+      af_positions:
+        flag: True
+        af_start: 4
+    structure:
+      spar_cap_ss:
+        flag: True
+        n_opt: 8
+        max_decrease: 0.5
+        max_increase: 1.5
+        index_start: 0
+        index_end: 8
+      spar_cap_ps:
+        flag: True
+        n_opt: 8
+        max_decrease: 0.5
+        max_increase: 1.5
+        index_start: 0
+        index_end: 8
+      te_ss:
+        flag: True
+        n_opt: 8
+        min_gain: 0.5
+        max_gain: 1.5
+      te_ps:
+        flag: True
+        n_opt: 8
+        min_gain: 0.5
+        max_gain: 1.5
+
+
+
+
+
+  #rotor_diameter:
+  #  flag: True
+  #  minimum: 50.0
+  #  maximum: 180.0
+  #floating:
+  #  joints:
+  #    flag: True
+  #    z_coordinate:
+  #        - names: [main_keel, col1_keel, col2_keel, col3_keel]
+  #          lower_bound: -40.0
+  #          upper_bound: -15.0
+  #    r_coordinate:
+  #        - names: [col1_keel, col1_freeboard, col2_keel, col2_freeboard, col3_keel, col3_freeboard]
+  #          lower_bound: 38.8125
+  #          upper_bound: 64.6875
+  #  members:
+  #      flag: True
+  #      groups:
+  #        - names: [column1,column2,column3]
+  #          diameter:
+  #              lower_bound: 9.375
+  #              upper_bound: 15.625
+  #              constant: True
+  #          thickness:
+  #              lower_bound: 0.05
+  #              upper_bound: 0.25
+  #              constant: True
+          # - names: [Y_pontoon_lower1, Y_pontoon_lower2, Y_pontoon_lower3]
+          #   diameter:
+          #     lower_bound: 7.5
+          #     upper_bound: 12.5
+          
+
+
+constraints:
+  blade:
+    strains_spar_cap_ss:
+      flag: True
+      max: 0.004
+    strains_spar_cap_ps:
+      flag: True
+      max: 0.004
+    tip_deflection:
+      flag: True
+      margin: 1.4175
+    rail_transport:
+      8_axle: True
+      4_axle: False
+    stall:
+      flag: True
+      margin: 0.05233
+    chord:
+      flag: True
+      max: 4.3
+    root_circle_diameter:
+      flag: True
+    frequency:
+      flap_3P: True
+      edge_3P: True
+    moment_coefficient:
+      flag: False
+      min: 0.15
+      max: 0.15
+    match_cl_cd:
+      flag_cl: False
+      flag_cd: False
+      filename: 'file path to constraint data'
+    match_L_D:
+      flag_L: False
+      flag_D: False
+      filename: 'file path to constraint data'
+
+  tower:
+    height_constraint: 
+      flag: True
+      lower_bound:  0.01
+      upper_bound: 0.1
+    stress:
+      flag: False
+    global_buckling:
+      flag: False
+    shell_buckling:
+      flag: False
+    slope:
+      flag: True
+    d_to_t:
+      flag: False
+      lower_bound: 50.0
+      upper_bound: 51.0
+    taper:
+      flag: True
+      lower_bound: 0.5
+    frequency:
+      flag: False
+    frequency_1:
+      flag: False
+      lower_bound: 0.1
+      upper_bound: 0.1
+  
+  monopile:
+    pile_depth:
+      flag: False
+      lower_bound: 0.0
+    stress:
+      flag: False
+    global_buckling:
+      flag: False
+    shell_buckling:
+      flag: False
+    slope:
+      flag: False
+    d_to_t:
+      flag: False
+      lower_bound: 50.0
+      upper_bound: 51.0
+    taper:
+      flag: False
+      lower_bound: 0.5
+    frequency:
+      flag: False
+    frequency_1:
+      flag: False
+      lower_bound: 0.1
+      upper_bound: 0.1
+
+  hub: 
+    hub_diameter:
+      flag: True
+
+  drivetrain:
+    lss:
+      flag: False 
+    hss:
+      flag: False 
+    bedplate:
+      flag: False 
+    mb1:
+      flag: False 
+    mb2:
+      flag: False
+    length:
+      flag: False
+    height:
+      flag: False
+    access:
+      flag: False
+      lower_bound: 0.5
+    ecc:
+      flag: False
+
+  control:
+    rotor_overspeed:
+      flag: True
+      min: 0.0
+      max: 0.25
+    Max_PtfmPitch:
+      flag: True
+      max: 5.5
+    Std_PtfmPitch:
+      flag: False
+      max: 2.
+  Max_Offset:
+    flag: True
+    max: 30.
+  floating:
+    stress: 
+      flag: True
+    global_buckling: 
+      flag: True
+    shell_buckling: 
+      flag: True
+
+  
+
+#merit_figure: platform_mass  # Merit figure of the optimization problem. The options are 'AEP' - 'LCOE' - 'Cp' - 'blade_mass' - 'blade_tip_deflection'
+merit_figure:  'LCOE' #String from, ['LCOE', 'AEP', 'Cp', 'blade_mass', 'tower_mass', 'tower_cost', 'monopile_mass', 'monopile_cost', 'structural_mass', 'structural_cost', 'blade_tip_deflection', 'My_std', 'flp1_std'] Objective function / merit figure for optimization.  Choices are LCOE- levelized cost of energy, AEP- turbine annual energy production, Cp- rotor power coefficient, blade_mass, tower_mass, tower_cost, monopile_mass, monopile_cost, structural_mass- tower+monopile mass, structural_cost- tower+monopile cost, blade_tip_deflection- blade tip deflection distance towards tower, My_std- blade flap moment standard deviation, flp1_std- trailing flap standard deviation
+  
+
+driver:
+  #tol: 1e-06
+  #max_iter: 100
+  #max_function_calls: 100000
+  #solver: SLSQP
+  #step_size: 0.001
+  #form: central
+
+  optimization:
+    flag: False           # Flag to enable optimization
+    solver: LN_COBYLA         # Optimization solver. Other options are 'SLSQP' - 'CONMIN'
+    tol: 1.e-2            # Optimality tolerance
+    max_iter: 2          # Maximum number of iterations (SLSQP)
+  design_of_experiments:
+    flag: True            # Flag to enable design of experiments
+    run_parallel: True    # Flag to run using parallel processing
+    generator: Uniform    # Type of input generator. (Uniform)
+    num_samples: 2        # number of samples for (Uniform only)
+    seed: 2
+    levels: 2
+    criterion: center
+    iterations: 2
+    debug_print: True
+
+recorder:
+    flag: True              # Flag to activate OpenMDAO recorder
+    file_name: log_opt.sql  # Name of OpenMDAO recorder
+    #includes: ['*raft*','*floating*','*platform*']
+    includes: ['*']
