@@ -169,12 +169,26 @@ def run_weis(fname_wt_input, fname_modeling_options, fname_opt_options, overridd
         # of the array.
         # This is useful when optimizing twist, where the first few indices
         # do not need to be optimized as they correspond to a circular cross-section.
-        if overridden_values is not None:
+        """if overridden_values is not None:
             for key in overridden_values:
                 num_values = np.array(overridden_values[key]).size
                 key_size = wt_opt[key].size
                 idx_start = key_size - num_values
-                wt_opt[key][idx_start:] = overridden_values[key]
+                wt_opt[key][idx_start:] = overridden_values[key]"""
+
+        #!!!!!!!!--------------Modified by Saeid------------!!!!!!!!!!!!!!! # if wt_opt[key] is scaalr, wt_opt[key].size made an error
+        if overridden_values is not None:
+            for key in overridden_values:
+                num_values = np.array(overridden_values[key]).size
+                if hasattr(wt_opt[key], '__len__'):
+                    key_size = len(wt_opt[key])
+                else:
+                    key_size = 1
+                if key_size > 1:
+                    idx_start = key_size - num_values
+                    wt_opt[key][idx_start:] = overridden_values[key]
+                else:
+                    wt_opt[key] = overridden_values[key]
 
         # Place the last design variables from a previous run into the problem.
         # This needs to occur after the above setup() and yaml2openmdao() calls
