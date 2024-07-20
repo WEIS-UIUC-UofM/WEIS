@@ -9,6 +9,8 @@ from wisdem.commonse.mpi_tools        import MPI
 from wisdem.commonse                  import fileIO
 from weis.glue_code.gc_ROSCOInputs    import assign_ROSCO_values
 from weis.control.tmd                 import assign_TMD_values
+from weis.surrogate.WTsurrogate       import WindTurbineDOE2SM
+
 
 fd_methods = ['SLSQP','SNOPT', 'LD_MMA']
 crawling_methods = ['DE', 'NSGA2']
@@ -206,13 +208,27 @@ def run_weis(fname_wt_input, fname_modeling_options, fname_opt_options, geometry
                 checks = wt_opt.check_partials(compact_print=True)
 
         sys.stdout.flush()
+
+        # Check if DOE & skip flag True & DOE results exist, skip DOE
+        SKIP_DRIVER = False
+        sm_filename = os.path.join(folder_output, os.path.splitext(opt_options['recorder']['file_name'])[0] + '.smt')
+        if opt_options['opt_flag']:
+            if opt_options['driver']['design_of_experiments']['flag']:
+                if 'skip_if_results_exist' in opt_options['driver']['design_of_experiments']:
+                    if opt_options['driver']['design_of_experiments']['skip_if_results_exist']:
+                        if os.path.isfile(sm_filename):
+                            SKIP_DRIVER = True
+                            if (not MPI) or (MPI and rank == 0):
+                                print('File {:} exists. Skipping the design of experiments.'.format(sm_filename))
+
         # Run openmdao problem
         if opt_options['opt_flag']:
-            wt_opt.run_driver()
+            if not SKIP_DRIVER:
+                wt_opt.run_driver()
         else:
             wt_opt.run_model()
 
-        if (not MPI) or (MPI and rank == 0):
+        if ((not MPI) or (MPI and rank == 0)) and (not SKIP_DRIVER):
             # Save data coming from openmdao to an output yaml file
             froot_out = os.path.join(folder_output, opt_options['general']['fname_output'])
             # Remove the fst_vt key from the dictionary and write out the modeling options
@@ -265,6 +281,19 @@ def run_weis(fname_wt_input, fname_modeling_options, fname_opt_options, geometry
     # Send each core in use to a barrier synchronization
     if MPI and color_i < 1000000:
         MPI.COMM_WORLD.Barrier()
+
+    # If design_of_experiment, recorder flag, train_surrogate_model are all True,
+    # collect sql files and create smt object
+    if opt_options['opt_flag'] and (not SKIP_DRIVER):
+        if opt_options['driver']['design_of_experiments']['flag'] and opt_options['recorder']['flag']:
+            if opt_options['driver']['design_of_experiments']['train_surrogate_model']:
+                sql_file = os.path.join(folder_output, opt_options['recorder']['file_name'])
+                if MPI:
+                    sql_file += '_{:}'.format(rank)
+                WTSM = WindTurbineDOE2SM()
+                WTSM.read_doe(sql_file, modeling_options, opt_options) # Parallel reading if MPI
+                WTSM.train_sm() # Parallel training if MPI
+                WTSM.write_sm(sm_filename) # Saving will be done in rank=0
 
     if rank == 0:
         return wt_opt, modeling_options, opt_options
