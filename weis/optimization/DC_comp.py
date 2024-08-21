@@ -13,7 +13,8 @@ class WindTurbineSMOpt():
 
     def __init__(self):
         self._sm_loaded = False
-    
+        self._opt_run = False
+        
         self.scipy_methods = [
                     "SLSQP",
                     "Nelder-Mead",
@@ -51,103 +52,16 @@ class WindTurbineSMOpt():
             avail_outputs_keys_compact.append(sm2[sm_ind]['outputs']['keys'].split('+'))
             
         avail_outputs_str_keys = '+'.join(avail_outputs_keys_str)
-        avail_outputs_keys = avail_outputs_str_keys.split('+')
-        
-        
-        avail_input_keys_ref = list(set(avail_inputs['keys']).intersection([
-                        'floating.member_main_column:outer_diameter',
-                        'floating.member_column1:outer_diameter',
-                        'floating.member_column2:outer_diameter',
-                        'floating.member_column3:outer_diameter',
-                        'floating.member_Y_pontoon_upper1:outer_diameter',
-                        'floating.member_Y_pontoon_upper2:outer_diameter',
-                        'floating.member_Y_pontoon_upper3:outer_diameter',
-                        'floating.member_Y_pontoon_lower1:outer_diameter',
-                        'floating.member_Y_pontoon_lower2:outer_diameter',
-                        'floating.member_Y_pontoon_lower3:outer_diameter',
-                        'configuration.rotor_diameter_user',
-                        'tune_rosco_ivc.Kp_float',
-                        'tune_rosco_ivc.ps_percent',
-                        'tune_rosco_ivc.omega_pc',
-                        'tune_rosco_ivc.ptfm_freq',
-                        'tune_rosco_ivc.zeta_pc',
-                        'floating.jointdv_0',
-                        'floating.jointdv_1',
-                        'floating.jointdv_2',
-                        'floating.memgrp0.outer_diameter_in',
-                        'floating.memgrp1.outer_diameter_in',
-                        'floating.memgrp2.outer_diameter_in',
-                        'floating.memgrp3.outer_diameter_in',
-                        
-                    ]))
-        avail_input_keys_ref.sort()
-        
-        if not (len(avail_input_keys_ref)==len(avail_inputs['keys'])):   
-            raise Exception('Some of the sm inputs are not available')
-        
-        avail_output_keys_ref = list(set(avail_outputs_keys).intersection([
-                        'tune_rosco_ivc.ps_percent',
-                        'tune_rosco_ivc.omega_pc',
-                        'tune_rosco_ivc.zeta_pc',
-                        'tune_rosco_ivc.Kp_float',
-                        'tune_rosco_ivc.ptfm_freq',
-                        'tune_rosco_ivc.omega_vs',
-                        'tune_rosco_ivc.zeta_vs',
-                        'configuration.rotor_diameter_user',
-                        'towerse.tower.fore_aft_freqs', # 123
-                        'towerse.tower.side_side_freqs', # 123
-                        'towerse.tower.torsion_freqs', # 123
-                        'towerse.tower.top_deflection',
-                        'floatingse.platform_base_F', # xyz
-                        'floatingse.platform_base_M', # xyz
-                        'floating.member_main_column:joint1', # xyz
-                        'floating.member_main_column:joint2', # xyz
-                        'floating.member_column1:joint1', # xyz
-                        'floating.member_column1:joint2', # xyz
-                        'floating.member_column2:joint1', # xyz
-                        'floating.member_column2:joint2', # xyz
-                        'floating.member_column3:joint1', # xyz
-                        'floating.member_column3:joint2', # xyz
-                        'floating.jointdv_0', # keel z-location
-                        'floating.jointdv_1', # freeboard z-location
-                        'floating.jointdv_2', # column123 r-location
-                        'raft.Max_Offset', # Maximum distance in surge/sway direction [m]
-                        'raft.heave_avg', # Average heave over all cases [m]
-                        'raft.Max_PtfmPitch', # Maximum platform pitch over all cases [deg]
-                        'raft.Std_PtfmPitch', # Average platform pitch std. over all cases [deg]
-                        'rigid_body_periods', # Rigid body natural period [s]
-                        'raft.heave_period', # Heave natural period [s]
-                        'raft.pitch_period', # Pitch natural period [s]
-                        'raft.roll_period', # Roll natural period [s]
-                        'raft.surge_period', # Surge natural period [s]
-                        'raft.sway_period', # Sway natural period [s]
-                        'raft.yaw_period', # Yaw natural period [s]
-                        'raft.max_nac_accel', # Maximum nacelle accelleration over all cases [m/s**2]
-                        'raft.max_tower_base', # Maximum tower base moment over all cases [N*m]
-                        'raft.platform_total_center_of_mass', # xyz
-                        'raft.platform_displacement',
-                        'raft.platform_mass', # Platform mass
-                        'tcons.tip_deflection_ratio', # Blade tip deflection ratio (constrained to be <=1.0)
-                        'financese.lcoe', # WEIS LCOE from FinanceSE
-                        'rotorse.rp.AEP', # WISDEM AEP from RotorSE
-                        'rotorse.blade_mass', # Blade mass
-                        #'towerse.tower_mass', # Tower mass
-                        'fixedse.structural_mass', # System structural mass for fixed foundation turbines
-                        'floatingse.system_structural_mass', # System structural mass for floating turbines
-                        'floatingse.platform_mass', # Platform mass from FloatingSE
-                        'floatingse.platform_cost', # Platform cost
-                        #'floatingse.mooring_mass', # Mooring mass
-                        #'floatingse.mooring_cost', # Mooring cost
-                        'floatingse.structural_frequencies', 
-                    ]))
-        avail_output_keys_ref.sort()
-        
+        avail_output_keys = avail_outputs_str_keys.split('+')
+        avail_input_keys = avail_inputs['keys']
+               
         # Store data
         self.avail_inputs = avail_inputs
-        self.avail_output_keys_ref = avail_output_keys_ref
-        self.avail_input_keys_ref = avail_input_keys_ref
+        self.avail_output_keys = avail_output_keys
+        self.avail_input_keys = avail_input_keys
         self.sm2 = sm2
         self.avail_outputs_keys_compact = avail_outputs_keys_compact
+        self._sm_loaded = True
 
 
 
@@ -159,21 +73,23 @@ class WindTurbineSMOpt():
         req_outputs = req_objective + req_constraints
         req_inputs = req_dv + req_design_parms
         
-        avail_output_keys_ref = self.avail_output_keys_ref
-        avail_input_keys_ref = self.avail_input_keys_ref
-        opt_output_key = list(set(req_outputs).intersection(avail_output_keys_ref))
+        avail_output_keys = self.avail_output_keys
+        avail_input_keys = self.avail_input_keys
+        opt_output_key = list(set(req_outputs).intersection(avail_output_keys))
         opt_output_key_wo_dot = [sub.replace('.', '_') for sub in opt_output_key]
-        objective_key = list(set(req_objective).intersection(avail_output_keys_ref))
+        objective_key = list(set(req_objective).intersection(avail_output_keys))
+        
         if len(req_objective)==0:
             raise Exception('Objective not available or missing, select a supported objective')
         if len(req_objective)>1:
             raise Exception('multiobjective optimization is not supported')
+            
         objective_key_wo_dot = [sub.replace('.', '_') for sub in objective_key]
-        constraints_key = list(set(req_constraints).intersection(avail_output_keys_ref))
+        constraints_key = list(set(req_constraints).intersection(avail_output_keys))
         constraints_key_wo_dot = [sub.replace('.', '_') for sub in constraints_key]
-        opt_dv_key = list(set(req_dv).intersection(avail_input_keys_ref))
+        opt_dv_key = list(set(req_dv).intersection(avail_input_keys))
         opt_dv_key_wo_dot = [sub.replace('.', '_') for sub in opt_dv_key]
-        opt_params_key = list(set(req_design_parms).intersection(avail_input_keys_ref))
+        opt_params_key = list(set(req_design_parms).intersection(avail_input_keys))
         
         self.opt_dv_key_wo_dot = opt_dv_key_wo_dot
         self.opt_dv_key = opt_dv_key
@@ -185,7 +101,6 @@ class WindTurbineSMOpt():
         self.opt_params_key = opt_params_key
         self.objective_key = objective_key
 
-# %%
     
     # from WISDEM/wisdem/glue_code/gc_PoseOptimization.py
     def _set_optimizer_properties(self, prob, options_keys=[], opt_settings_keys=[], mapped_keys={}):
@@ -562,7 +477,6 @@ class WindTurbineSMOpt():
                 print("Please choose correct constraint")
 
 
-
     def run_optimization(self):
         
         self.create_problem()
@@ -576,9 +490,16 @@ class WindTurbineSMOpt():
         prob.setup()
         # Execute the model with the given inputs
         prob.run_model()
+        self._opt_run = True
         
         
-    def save_opt_output(self):
+    def save_opt_output(self, opt_filename):
+        
+        if not self._sm_loaded:
+                raise Exception('SM data needs to be loaded first.')
+        if not self._opt_run:
+                raise Exception('Optimization needs to be run before saving to file.')
+                
         prob = self.prob
         objective_st = prob.get_val(self.objective_key_wo_dot[0])  
         
@@ -599,7 +520,16 @@ class WindTurbineSMOpt():
             dv_val = prob.get_val(self.opt_dv_key_wo_dot[k]) 
             opt_output['dvs']['dv_keys'].append(self.opt_dv_key[k])
             opt_output['dvs']['dv_values'][k] = dv_val
-        return opt_output
+            
+        try:
+            with open(opt_filename, 'wb') as fid:
+                pkl.dump(opt_output, fid, protocol=5)
+        except:
+            print('Unable to write optimization result file: {:}.'.format(opt_filename))
+            raise Exception('Unable to write optimization result file: {:}.'.format(opt_filename))
+                
+        # return opt_output
+
 
 
 class SM_Comp(om.ExplicitComponent):
@@ -609,78 +539,78 @@ class SM_Comp(om.ExplicitComponent):
    
 
     def setup(self):
-        avail_input_keys_ref = WTSMO.avail_input_keys_ref
+        avail_input_keys = WTSMO.avail_input_keys
         opt_output_key = WTSMO.opt_output_key
         
-        for k in range(len(avail_input_keys_ref)):   #add all sm inputs, add their values
+        for k in range(len(avail_input_keys)):   #add all sm inputs, add their values
             
-            if avail_input_keys_ref[k] == 'floating.jointdv_0':
+            if avail_input_keys[k] == 'floating.jointdv_0':
                 self.add_input('floating_jointdv_0')
                 
-            elif avail_input_keys_ref[k]  == "floating.jointdv_1":
+            elif avail_input_keys[k]  == "floating.jointdv_1":
                 self.add_input('floating_jointdv_1')
                 
-            elif avail_input_keys_ref[k]  == "floating.jointdv_2":
+            elif avail_input_keys[k]  == "floating.jointdv_2":
                 self.add_input('floating_jointdv_2')
                 
-            elif avail_input_keys_ref[k]  == "floating.memgrp0.outer_diameter_in":
+            elif avail_input_keys[k]  == "floating.memgrp0.outer_diameter_in":
                 self.add_input('floating_memgrp0_outer_diameter_in')
                 
-            elif avail_input_keys_ref[k]  == "floating.memgrp1.outer_diameter_in":
+            elif avail_input_keys[k]  == "floating.memgrp1.outer_diameter_in":
                 self.add_input('floating_memgrp1_outer_diameter_in')
                 
-            elif avail_input_keys_ref[k]  == "floating.memgrp2.outer_diameter_in":
+            elif avail_input_keys[k]  == "floating.memgrp2.outer_diameter_in":
                 self.add_input('floating_memgrp2_outer_diameter_in')
                 
-            elif avail_input_keys_ref[k]  == "floating.memgrp3.outer_diameter_in":
+            elif avail_input_keys[k]  == "floating.memgrp3.outer_diameter_in":
                 self.add_input('floating_memgrp3_outer_diameter_in')
                 
-            elif avail_input_keys_ref[k]  == "tune_rosco_ivc.ps_percent":
+            elif avail_input_keys[k]  == "tune_rosco_ivc.ps_percent":
                 self.add_input('tune_rosco_ivc_ps_percent')
                 
-            elif avail_input_keys_ref[k]  == "tune_rosco_ivc.omega_pc":
+            elif avail_input_keys[k]  == "tune_rosco_ivc.omega_pc":
                 self.add_input('tune_rosco_ivc_omega_pc')
                 
-            elif avail_input_keys_ref[k]  == "tune_rosco_ivc.ptfm_freq":
+            elif avail_input_keys[k]  == "tune_rosco_ivc.ptfm_freq":
                 self.add_input('tune_rosco_ivc_ptfm_freq')
                 
-            elif avail_input_keys_ref[k]  == "tune_rosco_ivc.zeta_pc":
+            elif avail_input_keys[k]  == "tune_rosco_ivc.zeta_pc":
                 self.add_input('tune_rosco_ivc_zeta_pc')
                 
-            elif avail_input_keys_ref[k]  == "configuration.rotor_diameter_user":
+            elif avail_input_keys[k]  == "configuration.rotor_diameter_user":
                 self.add_input('configuration_rotor_diameter_user')
                 
-            elif avail_input_keys_ref[k]  == "floating.member_main_column:outer_diameter":
+            elif avail_input_keys[k]  == "floating.member_main_column:outer_diameter":
                 self.add_input('floating_member_main_column:outer_diameter')
                 
-            elif avail_input_keys_ref[k]  == "floating.member_column1:outer_diameter":
+            elif avail_input_keys[k]  == "floating.member_column1:outer_diameter":
                 self.add_input('floating_member_column1:outer_diameter')
                 
-            elif avail_input_keys_ref[k]  == "floating.member_column2:outer_diameter":
+            elif avail_input_keys[k]  == "floating.member_column2:outer_diameter":
                 self.add_input('floating_member_column2:outer_diameter')
                 
-            elif avail_input_keys_ref[k]  == "floating.member_column3:outer_diameter":
+            elif avail_input_keys[k]  == "floating.member_column3:outer_diameter":
                 self.add_input('floating_member_column3:outer_diameter')
                 
-            elif avail_input_keys_ref[k]  == "floating.member_Y_pontoon_upper1:outer_diameter":
+            elif avail_input_keys[k]  == "floating.member_Y_pontoon_upper1:outer_diameter":
                 self.add_input('floating_member_Y_pontoon_upper1:outer_diameter')
                 
-            elif avail_input_keys_ref[k]  == "floating.member_Y_pontoon_upper2:outer_diameter":
+            elif avail_input_keys[k]  == "floating.member_Y_pontoon_upper2:outer_diameter":
                 self.add_input('floating_member_Y_pontoon_upper2:outer_diameter')
                 
-            elif avail_input_keys_ref[k]  == "floating.member_Y_pontoon_upper3:outer_diameter":
+            elif avail_input_keys[k]  == "floating.member_Y_pontoon_upper3:outer_diameter":
                 self.add_input('floating_member_Y_pontoon_upper3:outer_diameter')
                 
-            elif avail_input_keys_ref[k]  == "floating.member_Y_pontoon_lower1:outer_diameter":
+            elif avail_input_keys[k]  == "floating.member_Y_pontoon_lower1:outer_diameter":
                 self.add_input('floating_member_Y_pontoon_lower1:outer_diameter')
                 
-            elif avail_input_keys_ref[k]  == "floating.member_Y_pontoon_lower2:outer_diameter":
+            elif avail_input_keys[k]  == "floating.member_Y_pontoon_lower2:outer_diameter":
                 self.add_input('floating_member_Y_pontoon_lower2:outer_diameter')
                 
-            elif avail_input_keys_ref[k]  == "floating.member_Y_pontoon_lower3:outer_diameter":
+            elif avail_input_keys[k]  == "floating.member_Y_pontoon_lower3:outer_diameter":
                 self.add_input('floating_member_Y_pontoon_lower3:outer_diameter')
                 
-            elif avail_input_keys_ref[k]  == "tune_rosco_ivc.Kp_float":
+            elif avail_input_keys[k]  == "tune_rosco_ivc.Kp_float":
                 self.add_input('tune_rosco_ivc_Kp_float')
             else:
                 print("Please choose correct input")
@@ -720,101 +650,101 @@ class SM_Comp(om.ExplicitComponent):
         return output_value
 
     def compute(self, inputs, outputs):
-        avail_input_keys_ref = WTSMO.avail_input_keys_ref
+        avail_input_keys = WTSMO.avail_input_keys
         opt_output_key = WTSMO.opt_output_key
 
         predict_input = []
-        for k in range(len(avail_input_keys_ref)):   #add all sm inputs
+        for k in range(len(avail_input_keys)):   #add all sm inputs
             
-            if avail_input_keys_ref[k] == 'floating.jointdv_0':
+            if avail_input_keys[k] == 'floating.jointdv_0':
                 floating_jointdv_0 = inputs['floating_jointdv_0']
                 predict_input.append(floating_jointdv_0)
                 
-            elif avail_input_keys_ref[k]  == "floating.jointdv_1":
+            elif avail_input_keys[k]  == "floating.jointdv_1":
                 floating_jointdv_1 = inputs['floating_jointdv_1']
                 predict_input.append(floating_jointdv_1)
                 
-            elif avail_input_keys_ref[k]  == "floating.jointdv_2":
+            elif avail_input_keys[k]  == "floating.jointdv_2":
                 floating_jointdv_2 = inputs['floating_jointdv_2']
                 predict_input.append(floating_jointdv_2)
                 
-            elif avail_input_keys_ref[k]  == "floating.memgrp0.outer_diameter_in":
+            elif avail_input_keys[k]  == "floating.memgrp0.outer_diameter_in":
                 floating_memgrp0_outer_diameter_in = inputs['floating_memgrp0_outer_diameter_in']
                 predict_input.append(floating_memgrp0_outer_diameter_in)
                 
-            elif avail_input_keys_ref[k]  == "floating.memgrp1.outer_diameter_in":
+            elif avail_input_keys[k]  == "floating.memgrp1.outer_diameter_in":
                 floating_memgrp1_outer_diameter_in = inputs['floating_memgrp1_outer_diameter_in']
                 predict_input.append(floating_memgrp1_outer_diameter_in)
                 
-            elif avail_input_keys_ref[k]  == "floating.memgrp2.outer_diameter_in":
+            elif avail_input_keys[k]  == "floating.memgrp2.outer_diameter_in":
                 floating_memgrp2_outer_diameter_in = inputs['floating_memgrp2_outer_diameter_in']
                 predict_input.append(floating_memgrp2_outer_diameter_in)
                 
-            elif avail_input_keys_ref[k]  == "floating.memgrp3.outer_diameter_in":
+            elif avail_input_keys[k]  == "floating.memgrp3.outer_diameter_in":
                 floating_memgrp3_outer_diameter_in = inputs['floating_memgrp3_outer_diameter_in']
                 predict_input.append(floating_memgrp3_outer_diameter_in)
                 
-            elif avail_input_keys_ref[k]  == "tune_rosco_ivc.ps_percent":
+            elif avail_input_keys[k]  == "tune_rosco_ivc.ps_percent":
                 tune_rosco_ivc_ps_percent = inputs['tune_rosco_ivc_ps_percent']
                 predict_input.append(tune_rosco_ivc_ps_percent)
                 
-            elif avail_input_keys_ref[k]  == "tune_rosco_ivc.omega_pc":
+            elif avail_input_keys[k]  == "tune_rosco_ivc.omega_pc":
                 tune_rosco_ivc_omega_pc = inputs['tune_rosco_ivc_omega_pc']
                 predict_input.append(tune_rosco_ivc_omega_pc)
                 
-            elif avail_input_keys_ref[k]  == "tune_rosco_ivc.ptfm_freq":
+            elif avail_input_keys[k]  == "tune_rosco_ivc.ptfm_freq":
                 tune_rosco_ivc_ptfm_freq = inputs['tune_rosco_ivc_ptfm_freq']
                 predict_input.append(tune_rosco_ivc_ptfm_freq)
                 
-            elif avail_input_keys_ref[k]  == "tune_rosco_ivc.zeta_pc":
+            elif avail_input_keys[k]  == "tune_rosco_ivc.zeta_pc":
                 tune_rosco_ivc_zeta_pc = inputs['tune_rosco_ivc_zeta_pc']
                 predict_input.append(tune_rosco_ivc_zeta_pc)
                 
-            elif avail_input_keys_ref[k]  == "configuration.rotor_diameter_user":
+            elif avail_input_keys[k]  == "configuration.rotor_diameter_user":
                 configuration_rotor_diameter_user = inputs['configuration_rotor_diameter_user']
                 predict_input.append(configuration_rotor_diameter_user)
             
-            elif avail_input_keys_ref[k]  == "floating.member_main_column:outer_diameter":
+            elif avail_input_keys[k]  == "floating.member_main_column:outer_diameter":
                 floating_member_main_column_outer_diameter = inputs['floating_member_main_column:outer_diameter']
                 predict_input.append(floating_member_main_column_outer_diameter)
                 
-            elif avail_input_keys_ref[k]  == "floating.member_column1:outer_diameter":
+            elif avail_input_keys[k]  == "floating.member_column1:outer_diameter":
                 floating_member_column1_outer_diameter = inputs['floating_member_column1:outer_diameter']
                 predict_input.append(floating_member_column1_outer_diameter)
                 
-            elif avail_input_keys_ref[k]  == "floating.member_column2:outer_diameter":
+            elif avail_input_keys[k]  == "floating.member_column2:outer_diameter":
                 floating_member_column2_outer_diameter = inputs['floating_member_column2:outer_diameter']
                 predict_input.append(floating_member_column2_outer_diameter)
                 
-            elif avail_input_keys_ref[k]  == "floating.member_column3:outer_diameter":
+            elif avail_input_keys[k]  == "floating.member_column3:outer_diameter":
                 floating_member_column3_outer_diameter = inputs['floating_member_column3:outer_diameter']
                 predict_input.append(floating_member_column3_outer_diameter)
                 
-            elif avail_input_keys_ref[k]  == "floating.member_Y_pontoon_upper1:outer_diameter":
+            elif avail_input_keys[k]  == "floating.member_Y_pontoon_upper1:outer_diameter":
                 floating_member_Y_pontoon_upper1_outer_diameter = inputs['floating_member_Y_pontoon_upper1:outer_diameter']
                 predict_input.append(floating_member_Y_pontoon_upper1_outer_diameter)
                 
-            elif avail_input_keys_ref[k]  == "floating.member_Y_pontoon_upper2:outer_diameter":
+            elif avail_input_keys[k]  == "floating.member_Y_pontoon_upper2:outer_diameter":
                 floating_member_Y_pontoon_upper2_outer_diameter = inputs['floating_member_Y_pontoon_upper2:outer_diameter']
                 predict_input.append(floating_member_Y_pontoon_upper2_outer_diameter)
                 
-            elif avail_input_keys_ref[k]  == "floating.member_Y_pontoon_upper3:outer_diameter":
+            elif avail_input_keys[k]  == "floating.member_Y_pontoon_upper3:outer_diameter":
                 floating_member_Y_pontoon_upper3_outer_diameter = inputs['floating_member_Y_pontoon_upper3:outer_diameter']
                 predict_input.append(floating_member_Y_pontoon_upper3_outer_diameter)
                 
-            elif avail_input_keys_ref[k]  == "floating.member_Y_pontoon_lower1:outer_diameter":
+            elif avail_input_keys[k]  == "floating.member_Y_pontoon_lower1:outer_diameter":
                 floating_member_Y_pontoon_lower1_outer_diameter = inputs['floating_member_Y_pontoon_lower1:outer_diameter']
                 predict_input.append(floating_member_Y_pontoon_lower1_outer_diameter)
                 
-            elif avail_input_keys_ref[k]  == "floating.member_Y_pontoon_lower2:outer_diameter":
+            elif avail_input_keys[k]  == "floating.member_Y_pontoon_lower2:outer_diameter":
                 floating_member_Y_pontoon_lower2_outer_diameter = inputs['floating_member_Y_pontoon_lower2:outer_diameter']
                 predict_input.append(floating_member_Y_pontoon_lower2_outer_diameter)
                 
-            elif avail_input_keys_ref[k]  == "floating.member_Y_pontoon_lower3:outer_diameter":
+            elif avail_input_keys[k]  == "floating.member_Y_pontoon_lower3:outer_diameter":
                 floating_member_Y_pontoon_lower3_outer_diameter = inputs['floating_member_Y_pontoon_lower3:outer_diameter']
                 predict_input.append(floating_member_Y_pontoon_lower3_outer_diameter)
                 
-            elif avail_input_keys_ref[k]  == "tune_rosco_ivc.Kp_float":
+            elif avail_input_keys[k]  == "tune_rosco_ivc.Kp_float":
                 tune_rosco_ivc_Kp_float = inputs['tune_rosco_ivc_Kp_float']
                 predict_input.append(tune_rosco_ivc_Kp_float)
                 
@@ -853,7 +783,9 @@ fname_modeling_options = ex_dir + "modeling_options_level1_doe.yaml"
 fname_analysis_options = ex_dir + "analysis_options_level1_doe.yaml"
 wt_initial = WindTurbineOntologyPythonWEIS(fname_wt_input, fname_modeling_options, fname_analysis_options)
 wt_init, modeling_options, opt_options = wt_initial.get_input_data()
-
+folder_output = opt_options['general']['folder_output']
+# opt_filename = os.path.join(folder_output, 'opt_output' + '.pkl')
+opt_filename ='opt_output' + '.pkl'
 
 # requested dv and outputs for optimization (this info comes from Saeid)
 DCA_req = {
@@ -871,9 +803,7 @@ WTSMO = WindTurbineSMOpt()
 WTSMO.read_sm(sm_file, modeling_options, opt_options) 
 WTSMO.get_opt_vars(DCA_req) 
 WTSMO.run_optimization()
-WTSMO.save_opt_output()
+WTSMO.save_opt_output(opt_filename)
 
-
-
-opt_output = WTSMO.save_opt_output()
+# opt_output = WTSMO.save_opt_output()
 ####################################################################
