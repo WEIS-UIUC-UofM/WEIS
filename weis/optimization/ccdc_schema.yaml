@@ -1,0 +1,49 @@
+$schema: "http://json-schema.org/draft-07/schema#"
+$id: WEIS_add-ons_design_coupling
+title: WEIS design coupling analysis ontology 
+description: Scehma that describes the design coupling analysis options for WEIS
+type: object
+properties:
+    general:
+        type: object
+        default: {}
+        properties:
+            folder_output:
+                type: string
+                default: output
+                description: Name of folder to dump output files
+            fname_output:
+                type: string
+                default: output
+                description: File prefix for output files
+                
+    SMB_optimization:
+        type: object
+        default: {}
+        properties:
+            solver:
+                type: string
+                default: SLSQP
+                description: Optimization solver. Other options are 'COBYLA' - 'CONMIN'
+            tol:
+                type: number
+                default: 1.e-3 
+                description: Optimality tolerance
+            max_iter:
+                type: number
+                default: 300
+                description: Maximum number of iterations 
+    
+    DC_analysis:
+        type: object
+        default: {}
+        properties:
+            flag: *flag
+            method:
+                type: string
+                default: {}
+                description: Design coupling analysis method
+            
+            
+
+ 

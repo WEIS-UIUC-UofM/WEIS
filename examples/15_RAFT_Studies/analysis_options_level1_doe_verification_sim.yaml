@@ -1,0 +1,158 @@
+general:
+  folder_output: outputs/level1_doe_verification
+  fname_output: refturb_output
+design_variables:
+  control:
+    ps_percent:
+      flag: true
+      lower_bound: 0.75
+      upper_bound: 1.0
+    servo:
+      pitch_control:
+        omega:
+          flag: false
+          min: 0.1
+          max: 0.7
+        zeta:
+          flag: false
+          min: 0.7
+          max: 1.5
+        Kp_float:
+          flag: false
+          min: -20.0
+          max: 0.0
+        ptfm_freq:
+          flag: false
+          min: 0.1
+          max: 1.5
+      torque_control:
+        omega:
+          flag: false
+          min: 0.1
+          max: 0.7
+        zeta:
+          flag: false
+          min: 0.7
+          max: 1.5
+  floating:
+    members:
+      flag: true
+      groups:
+      - names:
+        - main_column
+        diameter:
+          lower_bound: 6.0
+          upper_bound: 14.0
+          constant: true
+      - names:
+        - column1
+        - column2
+        - column3
+        diameter:
+          lower_bound: 10.5
+          upper_bound: 14.5
+          constant: true
+      - names:
+        - Y_pontoon_upper1
+        - Y_pontoon_upper2
+        - Y_pontoon_upper3
+        diameter:
+          lower_bound: 0.71
+          upper_bound: 1.11
+          constant: true
+      - names:
+        - Y_pontoon_lower1
+        - Y_pontoon_lower2
+        - Y_pontoon_lower3
+        diameter:
+          lower_bound: 6.6148
+          upper_bound: 13.6148
+          constant: true
+    joints:
+      flag: true
+      z_coordinate:
+      - names:
+        - main_keel
+        - col1_keel
+        - col2_keel
+        - col3_keel
+        lower_bound: -24.0
+        upper_bound: -16.0
+      - names:
+        - main_freeboard
+        - col1_freeboard
+        - col2_freeboard
+        - col3_freeboard
+        lower_bound: 7.0
+        upper_bound: 21.0
+      r_coordinate:
+      - names:
+        - col1_keel
+        - col1_freeboard
+        - col2_keel
+        - col2_freeboard
+        - col3_keel
+        - col3_freeboard
+        lower_bound: 41.57
+        upper_bound: 61.57
+  rotor_diameter:
+    flag: false
+    minimum: 235.0
+    maximum: 250.0
+  tower:
+    outer_diameter:
+      flag: false
+      lower_bound: 6.0
+      upper_bound: 7.0
+    section_height:
+      flag: false
+      lower_bound: 13.0
+      upper_bound: 18.0
+constraints:
+  control:
+    Max_PtfmPitch:
+      flag: true
+      max: 6.9
+    Std_PtfmPitch:
+      flag: false
+      max: 2.0
+    nacelle_acceleration:
+      flag: true
+      max: 0.7
+  tower:
+    height_constraint:
+      flag: false
+      lower_bound: 0.1
+      upper_bound: 5.0
+    frequency_1:
+      flag: false
+      lower_bound: 0.35
+      upper_bound: 0.51
+    slope:
+      flag: false
+merit_figure: platform_mass
+driver:
+  optimization:
+    flag: false
+    solver: COBYLA
+    tol: 0.001
+    max_iter: 300
+  design_of_experiments:
+    flag: false
+    run_parallel: true
+    seed: 2
+    generator: LatinHypercube
+    num_samples: 50
+    levels: 1
+    skip_if_results_exist: true
+    train_surrogate_model: true
+  surrogate_based_optimization:
+    flag: false
+    max_iter: 300
+    max_function_calls: 300000
+    solver: COBYLA
+recorder:
+  flag: false
+  file_name: log_opt_verification.sql
+  includes:
+  - '*'

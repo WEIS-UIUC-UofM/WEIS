@@ -1,0 +1,12 @@
+general:
+    folder_output: outputs/level1_doe
+    fname_output: refturb_output
+    
+SMB_optimization:
+        solver: COBYLA
+        tol: 1.e-8
+        max_iter: 500
+            
+DC_analysis:
+        flag: True
+        
