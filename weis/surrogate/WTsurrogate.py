@@ -136,7 +136,8 @@ class WindTurbineDOE2SM():
                     var_values.append(inputs[key][0])
                 else:
                     for idx in range(len(np.squeeze(inputs[key]))):
-                        var_keys.append(key + '_' + str(idx))
+                        # var_keys.append(key + '_' + str(idx))
+                        var_keys.append(key)
                         try:
                             dvidx = input_keys_dv[input_keys_ref.index(key)]
                             if ((type(dvidx) == bool) and (dvidx == False)) or \
@@ -576,7 +577,6 @@ class WindTurbineDOE2SM():
             t = time.time() - t
             print('rank {:}, Surrogate model training done. Time (sec): {:}'.format(rank, t))
 
-
         # Gather trained data
         if MPI:
             MPI.COMM_WORLD.barrier()
@@ -590,7 +590,7 @@ class WindTurbineDOE2SM():
         self._sm_trained = True
 
 
-
+        print(data_entry['inputs']['keys'])
     def _split_list_chunks(self, fulllist, max_n_chunk=1, item_count=None):
         item_count = item_count or len(fulllist)
         n_chunks = min(item_count, max_n_chunk)

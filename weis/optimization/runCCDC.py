@@ -55,6 +55,7 @@ model = sm2[0]
 # identify available inputs and outputs provided by the sm
 opt_dv = model['inputs']
 opt_dv_key = opt_dv['keys']
+bounds = opt_dv['bounds']
 
 # get some needed modeling info
 if modeling_options['Level3']['flag']:
@@ -422,7 +423,8 @@ print(total)
 # get constraints and objective
 constraints_key, constraints_bounds = get_constraints(opt_options)
 if opt_options['merit_figure']=='platform_mass':
-    objective_key =  f'{floating_solve_component}.platform_mass'
+    # objective_key =  f'{floating_solve_component}.platform_mass'
+    objective_key = 'floatingse.platform_mass'
 else:
     objective_key = opt_options['merit_figure']
 
@@ -436,7 +438,8 @@ for k in range(len(opt_dv_key)):
 DCA_problem = {
     'DesignVars': {
         'DesignVars_keys': opt_dv_key,
-        'DesignVars_x0': DesignVars_x0
+        'DesignVars_x0': DesignVars_x0,
+        'bounds': bounds
     },
     'DesignParms': {
         'DesignParms_keys': [],
@@ -462,20 +465,32 @@ WTSMO.save_opt_output(opt_filename)
 #save optimization results
 try:
     with open(opt_filename, 'rb') as f:
-        opt_output = pkl.load(f)
+        opt_output_optall = pkl.load(f)
 except:
     print('Unable to read optimization result file: {:}.'.format(opt_filename))
     raise Exception('Unable to read optimization result file: {:}.'.format(opt_filename))
 
-xst_optall = opt_output['dvs']['dv_values']
-fst_optall = opt_output['objective']['objective_values']
+xst_optall = opt_output_optall['dvs']['dv_values']
+fst_optall = opt_output_optall['objective']['objective_values']
+keys_optall = opt_output_optall['dvs']['dv_keys']
+
+key_to_x0 = dict(zip(opt_dv_key, DesignVars_x0))
+
+# Reorder opt_dv_key and DesignVars_x0 according to xst_optall
+opt_dv_key_ordered = keys_optall
+DesignVars_x0_ordered = [key_to_x0[key] for key in keys_optall]
+
+# Update the dictionary with the reordered lists
+DCA_problem['DesignVars']['DesignVars_keys'] = opt_dv_key_ordered
+DCA_problem['DesignVars']['DesignVars_x0'] = DesignVars_x0_ordered
 
 
-# # run optimizations with different dvs to get sensitivity matrix
-# req_dv = DCA_problem["DesignVars"]["DesignVars_keys"]
-# # req_design_parms = DCA_valid["DesignParms"]["DesignParms_keys"]
+# run optimizations with different dvs to get sensitivity matrix
+req_dv = DCA_problem["DesignVars"]["DesignVars_keys"]
+# req_design_parms = DCA_valid["DesignParms"]["DesignParms_keys"]
 
-# # method 1: Saeid's method
+####################################################################
+# method 1: Saeid's method
 # xst_opt_fixed = np.zeros((len(req_dv)-1,len(req_dv)))
 # fst_opt_fixed = np.zeros((len(req_dv),))
 # for k in range(len(req_dv)):
@@ -501,8 +516,8 @@ fst_optall = opt_output['objective']['objective_values']
 #         print('Unable to read optimization result file: {:}.'.format(opt_filename))
 #         raise Exception('Unable to read optimization result file: {:}.'.format(opt_filename))
     
-#     print(opt_output['dvs']['dv_values'].T)
 #     xst_opt_fixed[:,k] = opt_output['dvs']['dv_values']
+#     print(opt_output['dvs']['dv_values'])
 #     fst_opt_fixed[k]  = opt_output['objective']['objective_values']
 
 
@@ -518,10 +533,354 @@ fst_optall = opt_output['objective']['objective_values']
 # Del_x_scaled_all = (np.diag(xst_matrix)- xst_optall)/xst_optall
 
 # Del_xst_matrix = (xst_matrix - (xst_optall*np.ones((len(req_dv),len(req_dv)))).T)/(xst_optall*np.ones((len(req_dv),len(req_dv)))).T
-# np.fill_diagonal(Del_xst_matrix, np.nan)    
+# # np.fill_diagonal(Del_xst_matrix, np.nan)    
+# np.fill_diagonal(Del_xst_matrix, 0)    
+
 # Del_xst_matrix_Del_x_scaled_all =  Del_xst_matrix/Del_x_scaled_all
 # sum_row = np.sum(Del_xst_matrix_Del_x_scaled_all, axis=0)
 # sum_col = np.sum(Del_xst_matrix_Del_x_scaled_all, axis=1)
 
+# Del_f_scaled_fixed = (fst_opt_fixed-fst_optall)/fst_opt_fixed
+# Del_f_scaled_all = (fst_opt_fixed-fst_optall)/fst_optall
+
+# ## #################################################################  
+# # Approach 1 
+
+
+# n_sweeps = 2
+# percent = 0.01
+# # xst_opt_fixed = np.zexst_opt_fixedros((len(req_dv)-1,n_sweeps))
+# # xst_opt_fixed = np.zeros((n_sweeps,))
+
+# fst_opt_fixed = np.zeros((n_sweeps,))
+
+# def gen_sweep_points(x0, c, n_sweeps, lb, ub):
+#     start = x0
+#     end = x0 + c*(ub-lb)
+#     array = np.linspace(start, end, n_sweeps)
+#     return array
+
+# x_jac = np.zeros((len(req_dv),len(req_dv)-1))
+# exitflag = [] 
+# constraint_violationv = []   
+# first_order_optimalityv = []  
+# gobj_st = np.zeros((len(req_dv),len(req_dv)-1))
+# for q in range(len(req_dv)):
+
+#     Design_Vars = req_dv[q]          
+#     AllDesign_Parms = req_dv[:q] + req_dv[q+1:]
+#     AllDesign_Parms_x0 = DCA_problem['DesignVars']['DesignVars_x0'][:q] + DCA_problem['DesignVars']['DesignVars_x0'][q+1:] 
+#     xst_opt_fixed = np.zeros((n_sweeps,len(AllDesign_Parms)))
+#     grad_x_st = np.zeros((len(AllDesign_Parms),))
     
     
+#     for p in range(len(AllDesign_Parms)):
+#         Sweep_Parms = AllDesign_Parms[p]
+#         Design_Parms = AllDesign_Parms[:p] + AllDesign_Parms[p+1:]
+#         Design_Parms_x0 = AllDesign_Parms_x0[:p] + AllDesign_Parms_x0[p+1:]
+        
+#         for sweep_ind in range(n_sweeps):
+            
+#             parms_indx = DCA_problem['DesignVars']["DesignVars_keys"].index(Sweep_Parms)
+#             lb = bounds[0,parms_indx]
+#             ub = bounds[1,parms_indx]
+#             x0_parms = DCA_problem['DesignVars']["DesignVars_x0"][parms_indx]
+#             points = gen_sweep_points(x0_parms, percent, n_sweeps, lb, ub)
+#             xp = points[sweep_ind]
+                
+#             DCA_req_fixed = {}
+#             DCA_req_fixed['constraints'] = DCA_problem["constraints"]
+#             DCA_req_fixed['DesignParms'] = {}
+#             DCA_req_fixed["DesignParms"]["DesignParms_keys"] = DCA_problem["DesignParms"]["DesignParms_keys"] + Design_Parms + [Sweep_Parms]
+#             DCA_req_fixed["DesignParms"]["DesignParms_values"] = np.concatenate((DCA_problem["DesignParms"]["DesignParms_values"],Design_Parms_x0, xp),None)
+#             DCA_req_fixed['DesignVars'] = {}
+#             DCA_req_fixed['DesignVars']["DesignVars_keys"] = [Design_Vars]
+#             DCA_req_fixed['objective'] = DCA_problem["objective"]
+               
+#             # run opt with all except design variables
+#             WTSMO.get_opt_vars(DCA_req_fixed) 
+#             WTSMO.run_optimization(DCA_req_fixed)
+#             WTSMO.save_opt_output(opt_filename)
+#             try:
+#                 with open(opt_filename, 'rb') as f:
+#                     opt_output = pkl.load(f)
+#             except:
+#                 print('Unable to read optimization result file: {:}.'.format(opt_filename))
+#                 raise Exception('Unable to read optimization result file: {:}.'.format(opt_filename))
+            
+#             xst_opt_fixed[sweep_ind,p] = opt_output['dvs']['dv_values']
+#             fst_opt_fixed[sweep_ind]  = opt_output['objective']['objective_values']
+#             # exitflag.append(prob.driver.pyopt_solution.optInform['value'])
+
+    
+#     x_lb = bounds[0,q]
+#     x_ub = bounds[1,q]
+#     xst_opt_fixed_scaled = (xst_opt_fixed-x_lb)/(x_ub-x_lb)
+#     dx_scaled = (points-points[0])/(points[-1]-points[0])
+#     gobj_st[q,p] = np.linalg.norm(np.gradient(fst_opt_fixed,  dx_scaled.T))
+    
+#     for p in range(len(AllDesign_Parms)):
+#         grad_x_st[p] =  np.linalg.norm(np.gradient(xst_opt_fixed_scaled[:,p], dx_scaled.T))
+        
+        
+#     x_jac[q,:]=grad_x_st.T
+
+
+# dc_jacobian = np.zeros((len(req_dv), len(req_dv)), dtype=float)
+# obj_jacobian = np.zeros((len(req_dv), len(req_dv)), dtype=float)
+
+# # Copy the original array to the new array, skipping the diagonal
+# for i in range(len(req_dv)):
+#     dc_jacobian[i, :i] = x_jac[i, :i]
+#     dc_jacobian[i, i+1:] = x_jac[i, i:]
+#     obj_jacobian[i, :i] = gobj_st[i, :i]
+#     obj_jacobian[i, i+1:] = gobj_st[i, i:]
+
+    
+
+# ## #################################################################  
+# # Approach 2
+
+# n_sweeps = 100
+# percent = 0.01
+# # xst_opt_fixed = np.zexst_opt_fixedros((len(req_dv)-1,n_sweeps))
+# # xst_opt_fixed = np.zeros((n_sweeps,))
+
+# fst_opt_fixed = np.zeros((n_sweeps,))
+
+# x_jac = np.zeros((len(req_dv),len(req_dv)-1))
+# exitflag = [] 
+# constraint_violationv = []   
+# first_order_optimalityv = []  
+# gobj_st = np.zeros((len(req_dv),len(req_dv)-1))
+# for q in range(len(req_dv)):
+
+#     Design_Vars = req_dv[q]          
+#     AllDesign_Parms = req_dv[:q] + req_dv[q+1:]
+#     AllDesign_Parms_x0 = DCA_problem['DesignVars']['DesignVars_x0'][:q] + DCA_problem['DesignVars']['DesignVars_x0'][q+1:] 
+#     xst_opt_fixed = np.zeros((n_sweeps,len(AllDesign_Parms)))
+#     grad_x_st = np.zeros((len(AllDesign_Parms),))
+    
+    
+#     for p in range(len(AllDesign_Parms)):
+#         Sweep_Parms = AllDesign_Parms[p]
+#         Design_Parms = AllDesign_Parms[:p] + AllDesign_Parms[p+1:]
+#         Design_Parms_x0 = AllDesign_Parms_x0[:p] + AllDesign_Parms_x0[p+1:]
+        
+#         for sweep_ind in range(n_sweeps):
+            
+#             parms_indx = DCA_problem['DesignVars']["DesignVars_keys"].index(Sweep_Parms)
+#             lb = bounds[0,parms_indx]
+#             ub = bounds[1,parms_indx]
+#             x0_parms = DCA_problem['DesignVars']["DesignVars_x0"][parms_indx]
+            
+#             points = np.linspace(lb, ub, n_sweeps)
+#             xp = points[sweep_ind]
+                
+#             DCA_req_fixed = {}
+#             DCA_req_fixed['constraints'] = DCA_problem["constraints"]
+#             DCA_req_fixed['DesignParms'] = {}
+#             DCA_req_fixed["DesignParms"]["DesignParms_keys"] = DCA_problem["DesignParms"]["DesignParms_keys"] + Design_Parms + [Sweep_Parms]
+#             DCA_req_fixed["DesignParms"]["DesignParms_values"] = np.concatenate((DCA_problem["DesignParms"]["DesignParms_values"],Design_Parms_x0, xp),None)
+#             DCA_req_fixed['DesignVars'] = {}
+#             DCA_req_fixed['DesignVars']["DesignVars_keys"] = [Design_Vars]
+#             DCA_req_fixed['objective'] = DCA_problem["objective"]
+               
+#             # run opt with all except design variables
+#             WTSMO.get_opt_vars(DCA_req_fixed) 
+#             WTSMO.run_optimization(DCA_req_fixed)
+#             WTSMO.save_opt_output(opt_filename)
+#             try:
+#                 with open(opt_filename, 'rb') as f:
+#                     opt_output = pkl.load(f)
+#             except:
+#                 print('Unable to read optimization result file: {:}.'.format(opt_filename))
+#                 raise Exception('Unable to read optimization result file: {:}.'.format(opt_filename))
+            
+#             xst_opt_fixed[sweep_ind,p] = opt_output['dvs']['dv_values']
+#             fst_opt_fixed[sweep_ind]  = opt_output['objective']['objective_values']
+#             # exitflag.append(prob.driver.pyopt_solution.optInform['value'])
+
+    
+#     x_lb = bounds[0,q]
+#     x_ub = bounds[1,q]
+#     xst_opt_fixed_scaled = (xst_opt_fixed-x_lb)/(x_ub-x_lb)
+#     dx_scaled = (points-points[0])/(points[-1]-points[0])
+#     gobj_st[q,p] = np.linalg.norm(np.gradient(fst_opt_fixed,  dx_scaled.T))
+    
+#     for p in range(len(AllDesign_Parms)):
+#         grad_x_st[p] =  np.linalg.norm(np.gradient(xst_opt_fixed_scaled[:,p], dx_scaled.T))
+        
+        
+#     x_jac[q,:]=grad_x_st.T
+
+
+# dc_jacobian2 = np.zeros((len(req_dv), len(req_dv)), dtype=float)
+# obj_jacobian2 = np.zeros((len(req_dv), len(req_dv)), dtype=float)
+
+# # Copy the original array to the new array, skipping the diagonal
+# for i in range(len(req_dv)):
+#     dc_jacobian2[i, :i] = x_jac[i, :i]
+#     dc_jacobian2[i, i+1:] = x_jac[i, i:]
+#     obj_jacobian2[i, :i] = gobj_st[i, :i]
+#     obj_jacobian2[i, i+1:] = gobj_st[i, i:]
+
+
+## #################################################################  
+# Approach 3 
+
+n_sweeps = 2
+percent = 0.01
+
+fst_opt_fixed = np.zeros((n_sweeps,))
+
+def gen_sweep_points(x0, c, n_sweeps, lb, ub):
+    start = x0
+    end = x0 + c*(ub-lb)
+    array = np.linspace(start, end, n_sweeps)
+    return array
+
+x_jac = np.zeros((len(req_dv),len(req_dv)-1))
+exitflag = [] 
+constraint_violationv = []   
+first_order_optimalityv = []  
+gobj_st = np.zeros((len(req_dv),))
+for q in range(len(req_dv)):
+
+    Sweep_Parms = req_dv[q]          
+    Design_Vars = req_dv[:q] + req_dv[q+1:]
+    AllDesign_Parms_x0 = DCA_problem['DesignVars']['DesignVars_x0'][:q] + DCA_problem['DesignVars']['DesignVars_x0'][q+1:] 
+    xst_opt_fixed = np.zeros((n_sweeps,len(Design_Vars)))
+    grad_x_st = np.zeros((len(Design_Vars),))
+    
+        
+    for sweep_ind in range(n_sweeps):
+        
+        parms_indx = DCA_problem['DesignVars']["DesignVars_keys"].index(Sweep_Parms)
+        lb = bounds[0,parms_indx]
+        ub = bounds[1,parms_indx]
+        x0_parms = DCA_problem['DesignVars']["DesignVars_x0"][parms_indx]
+        points = gen_sweep_points(x0_parms, percent, n_sweeps, lb, ub)
+        xp = points[sweep_ind]
+            
+        DCA_req_fixed = {}
+        DCA_req_fixed['constraints'] = DCA_problem["constraints"]
+        DCA_req_fixed['DesignParms'] = {}
+        DCA_req_fixed["DesignParms"]["DesignParms_keys"] = DCA_problem["DesignParms"]["DesignParms_keys"] + [Sweep_Parms]
+        DCA_req_fixed["DesignParms"]["DesignParms_values"] = np.concatenate((DCA_problem["DesignParms"]["DesignParms_values"], xp),None)
+        DCA_req_fixed['DesignVars'] = {}
+        DCA_req_fixed['DesignVars']["DesignVars_keys"] = Design_Vars
+        DCA_req_fixed['objective'] = DCA_problem["objective"]
+           
+        # run opt with all except design variables
+        WTSMO.get_opt_vars(DCA_req_fixed) 
+        WTSMO.run_optimization(DCA_req_fixed)
+        WTSMO.save_opt_output(opt_filename)
+        try:
+            with open(opt_filename, 'rb') as f:
+                opt_output = pkl.load(f)
+        except:
+            print('Unable to read optimization result file: {:}.'.format(opt_filename))
+            raise Exception('Unable to read optimization result file: {:}.'.format(opt_filename))
+        
+        xst_opt_fixed[sweep_ind,:] = opt_output['dvs']['dv_values']
+        fst_opt_fixed[sweep_ind]  = opt_output['objective']['objective_values']
+        # exitflag.append(prob.driver.pyopt_solution.optInform['value'])
+
+    
+    x_lb = bounds[0,q]
+    x_ub = bounds[1,q]
+    xst_opt_fixed_scaled = (xst_opt_fixed-x_lb)/(x_ub-x_lb)
+    dx_scaled = (points-points[0])/(points[-1]-points[0])
+    gobj_st[q] = np.linalg.norm(np.gradient(fst_opt_fixed,  dx_scaled.T))
+    
+    for p in range(len(Design_Vars)):
+        grad_x_st[p] =  np.linalg.norm(np.gradient(xst_opt_fixed_scaled[:,p], dx_scaled.T))
+        
+        
+    x_jac[q,:]=grad_x_st.T
+
+
+dc_jacobian3 = np.zeros((len(req_dv), len(req_dv)), dtype=float)
+obj_jacobian3 = gobj_st.T
+
+# Copy the original array to the new array, skipping the diagonal
+for i in range(len(req_dv)):
+    dc_jacobian3[i, :i] = x_jac[i, :i]
+    dc_jacobian3[i, i+1:] = x_jac[i, i:]
+
+## #################################################################  
+# Approach 4 
+
+n_sweeps = 100
+
+fst_opt_fixed = np.zeros((n_sweeps,))
+
+x_jac = np.zeros((len(req_dv),len(req_dv)-1))
+exitflag = [] 
+constraint_violationv = []   
+first_order_optimalityv = []  
+gobj_st = np.zeros((len(req_dv),))
+for q in range(len(req_dv)):
+
+    Sweep_Parms = req_dv[q]          
+    Design_Vars = req_dv[:q] + req_dv[q+1:]
+    AllDesign_Parms_x0 = DCA_problem['DesignVars']['DesignVars_x0'][:q] + DCA_problem['DesignVars']['DesignVars_x0'][q+1:] 
+    xst_opt_fixed = np.zeros((n_sweeps,len(Design_Vars)))
+    grad_x_st = np.zeros((len(Design_Vars),))
+    
+        
+    for sweep_ind in range(n_sweeps):
+        
+        parms_indx = DCA_problem['DesignVars']["DesignVars_keys"].index(Sweep_Parms)
+        lb = bounds[0,parms_indx]
+        ub = bounds[1,parms_indx]
+        x0_parms = DCA_problem['DesignVars']["DesignVars_x0"][parms_indx]
+        points = np.linspace(lb, ub, n_sweeps)
+        xp = points[sweep_ind]
+            
+        DCA_req_fixed = {}
+        DCA_req_fixed['constraints'] = DCA_problem["constraints"]
+        DCA_req_fixed['DesignParms'] = {}
+        DCA_req_fixed["DesignParms"]["DesignParms_keys"] = DCA_problem["DesignParms"]["DesignParms_keys"] + [Sweep_Parms]
+        DCA_req_fixed["DesignParms"]["DesignParms_values"] = np.concatenate((DCA_problem["DesignParms"]["DesignParms_values"], xp),None)
+        DCA_req_fixed['DesignVars'] = {}
+        DCA_req_fixed['DesignVars']["DesignVars_keys"] = Design_Vars
+        DCA_req_fixed['objective'] = DCA_problem["objective"]
+           
+        # run opt with all except design variables
+        WTSMO.get_opt_vars(DCA_req_fixed) 
+        WTSMO.run_optimization(DCA_req_fixed)
+        WTSMO.save_opt_output(opt_filename)
+        try:
+            with open(opt_filename, 'rb') as f:
+                opt_output = pkl.load(f)
+        except:
+            print('Unable to read optimization result file: {:}.'.format(opt_filename))
+            raise Exception('Unable to read optimization result file: {:}.'.format(opt_filename))
+        
+        xst_opt_fixed[sweep_ind,:] = opt_output['dvs']['dv_values']
+        fst_opt_fixed[sweep_ind]  = opt_output['objective']['objective_values']
+        # exitflag.append(prob.driver.pyopt_solution.optInform['value'])
+
+    
+    x_lb = bounds[0,q]
+    x_ub = bounds[1,q]
+    xst_opt_fixed_scaled = (xst_opt_fixed-x_lb)/(x_ub-x_lb)
+    dx_scaled = (points-points[0])/(points[-1]-points[0])
+    gobj_st[q] = np.linalg.norm(np.gradient(fst_opt_fixed,  dx_scaled.T))
+    
+    for p in range(len(Design_Vars)):
+        grad_x_st[p] =  np.linalg.norm(np.gradient(xst_opt_fixed_scaled[:,p], dx_scaled.T))
+        
+        
+    x_jac[q,:]=grad_x_st.T
+
+
+dc_jacobian4 = np.zeros((len(req_dv), len(req_dv)), dtype=float)
+obj_jacobian4 = gobj_st.T
+
+# Copy the original array to the new array, skipping the diagonal
+for i in range(len(req_dv)):
+    dc_jacobian4[i, :i] = x_jac[i, :i]
+    dc_jacobian4[i, i+1:] = x_jac[i, i:] 

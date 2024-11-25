@@ -142,7 +142,7 @@ driver:
     run_parallel: true
     seed: 2
     generator: LatinHypercube
-    num_samples: 50
+    num_samples: 80
     levels: 1
     skip_if_results_exist: true
     train_surrogate_model: true
@@ -153,6 +153,6 @@ driver:
     solver: COBYLA
 recorder:
   flag: false
-  file_name: log_opt_verification.sql
+  file_name: log_opt_verification_80samples.sql
   includes:
   - '*'

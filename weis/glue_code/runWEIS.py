@@ -165,7 +165,8 @@ def run_weis(fname_wt_input, fname_modeling_options, fname_opt_options, geometry
             # If we're not performing optimization, we don't need to allocate
             # memory for the derivative arrays.
             wt_opt.setup(derivatives=False)
-
+        
+        
         # Load initial wind turbine data from wt_initial to the openmdao problem
         wt_opt = yaml2openmdao(wt_opt, modeling_options, wt_init, opt_options)
         wt_opt = assign_ROSCO_values(wt_opt, modeling_options, opt_options)
@@ -227,7 +228,18 @@ def run_weis(fname_wt_input, fname_modeling_options, fname_opt_options, geometry
                 wt_opt.run_driver()
         else:
             wt_opt.run_model()
-
+        
+        wt_opt.list_driver_vars(print_arrays=True,
+                      desvar_opts=['lower', 'upper', 'ref', 'ref0',
+                                    'indices', 'adder', 'scaler',
+                                    'parallel_deriv_color', 'min', 'max'],
+                      cons_opts=['lower', 'upper', 'equals', 'ref', 'ref0',
+                                  'indices', 'adder', 'scaler', 'linear', 'min', 'max'],
+                      objs_opts=['ref', 'ref0',
+                                  'indices', 'adder', 'scaler',
+                                  'parallel_deriv_color',
+                                  'cache_linear_solution'])
+        
         if ((not MPI) or (MPI and rank == 0)) and (not SKIP_DRIVER):
             # Save data coming from openmdao to an output yaml file
             froot_out = os.path.join(folder_output, opt_options['general']['fname_output'])

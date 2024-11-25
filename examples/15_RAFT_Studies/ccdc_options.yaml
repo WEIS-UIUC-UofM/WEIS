@@ -4,7 +4,7 @@ general:
     
 SMB_optimization:
         solver: COBYLA
-        tol: 1.e-8
+        tol: 1.e-5
         max_iter: 500
             
 DC_analysis:

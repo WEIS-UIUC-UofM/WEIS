@@ -504,16 +504,16 @@ class WindTurbineSMOpt():
         self._opt_run = True
         # prob.model.list_inputs() #used for debugging
         # prob.model.list_outputs()
-        prob.list_driver_vars(print_arrays=True,
-                      desvar_opts=['lower', 'upper', 'ref', 'ref0',
-                                    'indices', 'adder', 'scaler',
-                                    'parallel_deriv_color', 'min', 'max'],
-                      cons_opts=['lower', 'upper', 'equals', 'ref', 'ref0',
-                                  'indices', 'adder', 'scaler', 'linear', 'min', 'max'],
-                      objs_opts=['ref', 'ref0',
-                                  'indices', 'adder', 'scaler',
-                                  'parallel_deriv_color',
-                                  'cache_linear_solution'])
+        # prob.list_driver_vars(print_arrays=True,
+        #               desvar_opts=['lower', 'upper', 'ref', 'ref0',
+        #                             'indices', 'adder', 'scaler',
+        #                             'parallel_deriv_color', 'min', 'max'],
+        #               cons_opts=['lower', 'upper', 'equals', 'ref', 'ref0',
+        #                           'indices', 'adder', 'scaler', 'linear', 'min', 'max'],
+        #               objs_opts=['ref', 'ref0',
+        #                           'indices', 'adder', 'scaler',
+        #                           'parallel_deriv_color',
+        #                           'cache_linear_solution'])
         
         
     def save_opt_output(self, opt_filename):
