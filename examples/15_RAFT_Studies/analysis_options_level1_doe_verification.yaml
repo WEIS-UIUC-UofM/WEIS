@@ -1,5 +1,5 @@
 general:
-    folder_output: outputs/level1_doe
+    folder_output: outputs/level1_doe_verification
     fname_output: refturb_output
 
 design_variables:
@@ -72,6 +72,7 @@ design_variables:
         - names: [col1_keel, col1_freeboard, col2_keel, col2_freeboard, col3_keel, col3_freeboard] #Platform sizing: Spacing
           lower_bound: 41.57 #51.57 #48.57 #63.57 #42.57 # default: 51.57
           upper_bound: 61.57 #72.57 #63.57 #60.0
+          
   rotor_diameter:
     flag: True
     minimum: 235.0 #242.23775645
@@ -90,13 +91,13 @@ constraints:
   control:
     Max_PtfmPitch:
       flag: True
-      max:  6.757845 #6.74303  #deg
+      max: 6.9 # 6.757845 #6.74303  #deg
     Std_PtfmPitch:
       flag: False
       max: 2.0 #deg
     nacelle_acceleration:
       flag: True
-      max: 3.2667 # m/s^2
+      max:  0.7  #3.2667 # m/s^2
   tower:
     height_constraint:
       flag: False
@@ -114,15 +115,15 @@ merit_figure: platform_mass  # Merit figure of the optimization problem. The opt
 driver:
   optimization:
     flag: False           # Flag to enable optimization
-    solver: GN_AGS #LN_COBYLA         # Optimization solver. Other options are 'SLSQP' - 'CONMIN'
-    tol: 1.e-5            # Optimality tolerance
+    solver: COBYLA #LN_COBYLA         # Optimization solver. Other options are 'SLSQP' - 'CONMIN'
+    tol: 1.e-5           # Optimality tolerance
     max_iter: 700         # Maximum number of iterations (SLSQP)
   design_of_experiments:
     flag: True            # Flag to enable design of experiments
     run_parallel: True    # Flag to run using parallel processing
     seed: 2
     generator: LatinHypercube #Uniform #LatinHypercube #FullFact    # Type of input generator. (Uniform)
-    num_samples: 350     # number of samples for (Uniform only)
+    num_samples: 250     # number of samples for (Uniform only)
     levels: 1
     skip_if_results_exist: True
     train_surrogate_model: True
@@ -134,7 +135,9 @@ driver:
 
 recorder:
   flag: True              # Flag to activate OpenMDAO recorder
-  file_name: log_opt_350.sql  # Name of OpenMDAO recorder
+  # file_name: log_opt_verification_100samplesn.sql  # Name of OpenMDAO recorder
+  file_name: log_opt_250.sql  # Name of OpenMDAO recorder 
+
   includes: ['*'] #['*raft*','*floating*','*platform*']
 
 

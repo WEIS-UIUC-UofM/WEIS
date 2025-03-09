@@ -1,5 +1,7 @@
 general:
+    # folder_output: outputs/level1
     folder_output: outputs/level1_doe
+
     fname_output: refturb_output
 
 design_variables:
@@ -11,28 +13,28 @@ design_variables:
     servo:
       pitch_control:
         omega: #rad/s  #default: 0.2 
-          flag: True
+          flag: False
           min: 0.1
           max: 0.7
         zeta: #rad/s  #default:  1.0
-          flag: True
+          flag: False
           min: 0.7
           max: 1.5
         Kp_float: #s  #default:  -10.0
-          flag: True
+          flag: False
           min: -20.0 #-100.0
           max: 0.0
         ptfm_freq:  #rad/s default: 0.2
-          flag: True
+          flag: False
           min: 0.1 #0.00001
           max: 1.5
       torque_control:
         omega: #rad/s  #default: 0.12 
-          flag: True
+          flag: False
           min: 0.1
           max: 0.7
         zeta: #rad/s  #default: 0.85
-          flag: True
+          flag: False
           min: 0.7
           max: 1.5
   floating:
@@ -59,6 +61,8 @@ design_variables:
             lower_bound: 6.6148 #7.6148 # default: 9.6148
             upper_bound: 13.6148 #11.6148
             constant: True
+
+                                    
     joints:
       flag: True
       z_coordinate:
@@ -72,8 +76,10 @@ design_variables:
         - names: [col1_keel, col1_freeboard, col2_keel, col2_freeboard, col3_keel, col3_freeboard] #Platform sizing: Spacing
           lower_bound: 41.57 #51.57 #48.57 #63.57 #42.57 # default: 51.57
           upper_bound: 61.57 #72.57 #63.57 #60.0
+          
+  
   rotor_diameter:
-    flag: True
+    flag: False
     minimum: 235.0 #242.23775645
     maximum: 250.0
   tower: # does not work for design coupling analysis
@@ -90,13 +96,13 @@ constraints:
   control:
     Max_PtfmPitch:
       flag: True
-      max:  6.757845 #6.74303  #deg
+      max: 6.9 # 6.757845 #6.74303  #deg
     Std_PtfmPitch:
       flag: False
       max: 2.0 #deg
     nacelle_acceleration:
       flag: True
-      max: 3.2667 # m/s^2
+      max:  0.7  #3.2667 # m/s^2
   tower:
     height_constraint:
       flag: False
@@ -114,27 +120,24 @@ merit_figure: platform_mass  # Merit figure of the optimization problem. The opt
 driver:
   optimization:
     flag: False           # Flag to enable optimization
-    solver: GN_AGS #LN_COBYLA         # Optimization solver. Other options are 'SLSQP' - 'CONMIN'
+    solver: SLSQP #LN_COBYLA         # Optimization solver. Other options are 'SLSQP' - 'CONMIN'
     tol: 1.e-5            # Optimality tolerance
-    max_iter: 700         # Maximum number of iterations (SLSQP)
+    max_iter: 3000         # Maximum number of iterations (SLSQP)
   design_of_experiments:
-    flag: True            # Flag to enable design of experiments
-    run_parallel: True    # Flag to run using parallel processing
+    flag: False            # Flag to enable design of experiments
+    run_parallel: False    # Flag to run using parallel processing
     seed: 2
     generator: LatinHypercube #Uniform #LatinHypercube #FullFact    # Type of input generator. (Uniform)
-    num_samples: 350     # number of samples for (Uniform only)
+    num_samples: 50     # number of samples for (Uniform only)
     levels: 1
     skip_if_results_exist: True
     train_surrogate_model: True
-  surrogate_based_optimization:
-    flag: True            # Will work only if design_of_experiments results exist
-    max_iter: 300
-    max_function_calls: 300000
-    solver: COBYLA        # SLSQP, COBYLA
+
 
 recorder:
-  flag: True              # Flag to activate OpenMDAO recorder
-  file_name: log_opt_350.sql  # Name of OpenMDAO recorder
+  flag: False              # Flag to activate OpenMDAO recorder
+  # file_name: log_opt_level1.sql  # Name of OpenMDAO recorder
+  file_name: log_opt_600.sql  # Name of OpenMDAO recorder 
   includes: ['*'] #['*raft*','*floating*','*platform*']
 
 

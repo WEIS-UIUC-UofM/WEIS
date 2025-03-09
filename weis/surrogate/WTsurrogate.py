@@ -138,7 +138,8 @@ class WindTurbineDOE2SM():
                     var_values.append(inputs[key][0])
                 else: # if vector
                     for idx in range(len(np.squeeze(inputs[key]))):
-                        var_keys.append(key + '_' + str(idx))
+                        # var_keys.append(key + '_' + str(idx))
+                        var_keys.append(key)
                         try:
                             dvidx = input_keys_dv[input_keys_ref.index(key)]
                             if ((type(dvidx) == bool) and (dvidx == False)) or \

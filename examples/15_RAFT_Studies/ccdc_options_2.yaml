@@ -1,0 +1,10 @@
+general:
+  folder_output: outputs/level1_doe
+  fname_output: refturb_output
+SMB_optimization:
+  solver: Nelder-Mead
+  tol: 1.0e-05
+  max_iter: 1300000
+  max_function_calls: 1500000
+DC_analysis:
+  flag: true

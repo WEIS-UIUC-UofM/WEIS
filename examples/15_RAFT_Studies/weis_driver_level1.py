@@ -3,13 +3,13 @@ import time
 import sys
 
 from weis.glue_code.runWEIS     import run_weis
-# from wisdem.commonse.mpi_tools  import MPI
 from openmdao.utils.mpi  import MPI
+
 
 run_dir                = os.path.dirname( os.path.realpath(__file__) ) + os.sep
 fname_wt_input         = os.path.join(run_dir,"..","06_IEA-15-240-RWT", "IEA-15-240-RWT_VolturnUS-S.yaml")
 fname_modeling_options = run_dir + "modeling_options_level1_doe.yaml"
-fname_analysis_options = run_dir + "analysis_options_level1_doe.yaml"
+fname_analysis_options = run_dir + "analysis_options_level1.yaml"
 overridden_values = {}
 
 tt = time.time()
@@ -24,4 +24,18 @@ if rank == 0:
     sys.stdout.flush()
 
 print('rank = {:}, exiting'.format(rank))
-# wt_opt.driver.result
+
+
+# %%
+# wt_initial = WindTurbineOntologyPythonWEIS(fname_wt_input, fname_modeling_options, fname_analysis_options)
+# wt_init, modeling_options, opt_options = wt_initial.get_input_data()
+
+x_star = wt_opt.get_val('floating.jointdv_1')
+
+objective_st = wt_opt.get_val('raft.platform_mass')
+# exit_flag = wt_opt.driver._scipy_optimize_result['status']
+
+print(wt_opt.get_val('raft.pitch_period'))
+print(wt_opt.get_val('raft.heave_period'))
+print(wt_opt.get_val('raft.Std_PtfmPitch'))
+print(wt_opt.get_val('raft.heave_avg'))
