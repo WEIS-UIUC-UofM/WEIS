@@ -25,6 +25,7 @@ class WindTurbineSMOpt():
                     "SNOPT",
                     "CONMIN",
                     "NSGA2",
+                    "IPOPT"
                 ]
         self.avail_input_keys = []
         self.opt_output_key = []    
@@ -170,6 +171,21 @@ class WindTurbineSMOpt():
         # from WISDEM/wisdem/glue_code/gc_PoseOptimization.py
         # Set optimization solver and options. First, Scipy's SLSQP and COBYLA
         # if solver in self.scipy_methods:
+            
+        if solver=='DE':
+
+            prob.driver = om.DifferentialEvolutionDriver()
+            # prob.driver.options["optimizer"] = solver
+            prob.driver.options['max_gen'] = 200
+            prob.driver.options['pop_size'] = 80
+            # prob.driver.options['mutation'] = (0.3, 1.2)
+            # prob.driver.options['recombination'] = 0.9
+            # prob.driver.options['pop_size'] = 10
+            # options_keys = ["tol", "max_iter", "disp"]
+            # opt_settings_keys = ["rhobeg", "catol", "adaptive"]
+            # mapped_keys = {"max_iter": "maxiter"}
+            # prob = self._set_optimizer_properties(prob, options_keys, opt_settings_keys, mapped_keys)
+            
         if solver in self.scipy_methods:
 
             prob.driver = om.ScipyOptimizeDriver()
@@ -200,7 +216,16 @@ class WindTurbineSMOpt():
             # Most of the pyOptSparse options have special syntax when setting them,
             # so here we set them by hand instead of using `_set_optimizer_properties` for SNOPT and CONMIN.
             if solver == "CONMIN":
-                prob.driver.opt_settings["ITMAX"] = opt_options["max_iter"]
+                # prob.driver.opt_settings["ITMAX"] = opt_options["max_iter"]
+                prob.driver.opt_settings["ITMAX"] = opt_options["SMB_optimization"]["max_iter"]
+            if solver == "IPOPT":
+                prob.driver.opt_settings["tol"] = opt_options["SMB_optimization"]["tol"]    
+                prob.driver.opt_settings["acceptable_tol"] = opt_options["SMB_optimization"]["tol"]*1e1
+                prob.driver.opt_settings['max_iter'] = opt_options["SMB_optimization"]["max_iter"]
+                prob.driver.opt_settings['mu_strategy'] = 'adaptive'
+                prob.driver.opt_settings['bound_mult_init_method'] = 'mu-based'
+                # prob.driver.opt_settings['nlp_scaling_method'] = 'gradient-based'
+                prob.driver.opt_settings['nlp_scaling_method'] = 'user-scaling'
 
             if solver == "NSGA2":
                 opt_settings_keys = [
@@ -505,16 +530,16 @@ class WindTurbineSMOpt():
         self._opt_run = True
         # prob.model.list_inputs() #used for debugging
         # prob.model.list_outputs()
-        # prob.list_driver_vars(print_arrays=True,
-        #               desvar_opts=['lower', 'upper', 'ref', 'ref0',
-        #                             'indices', 'adder', 'scaler',
-        #                             'parallel_deriv_color', 'min', 'max'],
-        #               cons_opts=['lower', 'upper', 'equals', 'ref', 'ref0',
-        #                           'indices', 'adder', 'scaler', 'linear', 'min', 'max'],
-        #               objs_opts=['ref', 'ref0',
-        #                           'indices', 'adder', 'scaler',
-        #                           'parallel_deriv_color',
-        #                           'cache_linear_solution'])
+        prob.list_driver_vars(print_arrays=True,
+                      desvar_opts=['lower', 'upper', 'ref', 'ref0',
+                                    'indices', 'adder', 'scaler',
+                                    'parallel_deriv_color', 'min', 'max'],
+                      cons_opts=['lower', 'upper', 'equals', 'ref', 'ref0',
+                                  'indices', 'adder', 'scaler', 'linear', 'min', 'max'],
+                      objs_opts=['ref', 'ref0',
+                                  'indices', 'adder', 'scaler',
+                                  'parallel_deriv_color',
+                                  'cache_linear_solution'])
         
         
         
@@ -531,6 +556,8 @@ class WindTurbineSMOpt():
         solver = self.opt_options['SMB_optimization']['solver']
         if solver in self.scipy_methods:
             exit_flag = prob.driver._scipy_optimize_result['status']
+        elif solver in self.pyoptsparse_methods:
+            exit_flag = prob.driver.pyopt_solution.optInform['value']
         else:
             exit_flag=[]
         # output dictionary
@@ -540,8 +567,12 @@ class WindTurbineSMOpt():
           "constraints":{"constraints_keys": [], "constraints_values":np.zeros((len(self.constraints_key),))}, 
           "success": prob.driver.result.success,
           "exit_flag": exit_flag
-           
+          
         }
+        # print(prob.driver.opt_settings) 
+        # print(prob.driver.options) 
+        # print(prob.driver.opt_settings['tol']) 
+        # print(prob.driver.opt_settings['acceptable_tol'])
         # print(dir(prob.driver.result))
         # print(prob.driver.result)
         # print(prob.driver.msginfo)
@@ -551,7 +582,7 @@ class WindTurbineSMOpt():
         # print('raft.Std_PtfmPitch', prob.get_val('raft_Std_PtfmPitch'))
         # print('raft.heave_period', prob.get_val('raft_heave_period'))
         # print('raft.pitch_period', prob.get_val('raft_pitch_period'))
-        # print(prob.driver.result)
+        print(prob.driver.result)
         for k in range(len(self.constraints_key)):
             cons_val = prob.get_val(self.constraints_key_wo_dot[k]) 
             opt_output['constraints']['constraints_keys'].append(self.constraints_key[k])

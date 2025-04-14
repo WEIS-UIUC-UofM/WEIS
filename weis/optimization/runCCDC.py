@@ -44,7 +44,7 @@ opt_filename ='opt_output' + '.pkl'
 ####################################################################
 
 sm_file = os.path.join(folder_output, os.path.splitext(opt_options['recorder']['file_name'])[0] + '.smt')
-fname_ccdc_options = ex_dir + "ccdc_options.yaml"
+fname_ccdc_options = ex_dir + "ccdc_options1.yaml"
 ccdc_options = load_yaml(fname_ccdc_options) 
 WTSMO = WindTurbineSMOpt(ccdc_options)
 WTSMO.read_sm(sm_file, modeling_options)
@@ -721,14 +721,19 @@ keys_optall = opt_output_optall['dvs']['dv_keys']
 # get exit flag from runSBO (capability needs to be added)
 
 
-# Reorder opt_dv_key and DesignVars_x0 according to xst_optall
+# Reorder opt_dv_key, bounds and DesignVars_x0 according to xst_optall
 key_to_x0 = dict(zip(opt_dv_key, DesignVars_x0))
 opt_dv_key_ordered = keys_optall
 DesignVars_x0_ordered = [key_to_x0[key] for key in keys_optall]
+# Find the indices of the new order
+index_map = [opt_dv_key.index(key) for key in opt_dv_key_ordered]
+# Reorder the columns of bounds
+bounds_ordered = bounds[:, index_map]
+
 # Update the dictionary with the reordered lists
 DCA_problem['DesignVars']['DesignVars_keys'] = opt_dv_key_ordered
 DCA_problem['DesignVars']['DesignVars_x0'] = DesignVars_x0_ordered
-
+DCA_problem['DesignVars']['DesignVars_x0'] = list(DCA_problem['DesignVars']['DesignVars_x0'])
 
 # run optimizations with different dvs to get sensitivity matrix
 req_dv = DCA_problem["DesignVars"]["DesignVars_keys"]
@@ -808,8 +813,9 @@ def opt_sweep(DCA_req_fixed,opt_filename,fname_ccdc_options):
         
         
     solver =  ccdc_options['SMB_optimization']['solver']
-    if solver=='SLSQP' and  opt_output['exit_flag']!=0:    #switch to COBYLA if SLSQP fails
-        
+    
+    # if solver=='SLSQP' and  opt_output['exit_flag']!=0:    #switch to COBYLA if SLSQP fails
+    if opt_output['success']!=1:     
         #create copies of the analysis and modeling yaml
         name, ext = os.path.splitext(fname_ccdc_options)
         fname_ccdc_options_1 = f"{name}_1{ext}"          # Add "_1" before the file extension
@@ -834,11 +840,9 @@ def opt_sweep(DCA_req_fixed,opt_filename,fname_ccdc_options):
             print('Unable to read optimization result file: {:}.'.format(opt_filename))
             raise Exception('Unable to read optimization result file: {:}.'.format(opt_filename))
             
-        if opt_output['exit_flag']!=1:  #switch to DE if COBYLA fails
-            # print(Design_Vars)
-            # print(Sweep_Parms)
-            # print(xp)
-            
+        # if opt_output['exit_flag']!=1:  #switch to DE if COBYLA fails
+        if opt_output['success']!=1: 
+
             #create copies of the analysis and modeling yaml
             name, ext = os.path.splitext(fname_ccdc_options)
             fname_ccdc_options_2 = f"{name}_2{ext}"          # Add "_2" before the file extension
@@ -866,18 +870,26 @@ def opt_sweep(DCA_req_fixed,opt_filename,fname_ccdc_options):
                 exitflag_opt = 0
             else:
                 exitflag_opt = 100
+            success_opt = opt_output['success']
 
         if opt_output['exit_flag']==1:
             exitflag_opt = 0
+        
+        success_opt = opt_output['success']
     else:
         exitflag_opt = opt_output['exit_flag']
-        
-    xst_opt = opt_output['dvs']['dv_values'][0]
+        success_opt = opt_output['success']
+    
+    if len(DCA_req_fixed['DesignVars']["DesignVars_keys"])==1:
+        xst_opt = opt_output['dvs']['dv_values'][0]
+    else:
+        xst_opt = opt_output['dvs']['dv_values']
     fst_opt = opt_output['objective']['objective_values'][0]
-    return xst_opt, fst_opt, exitflag_opt
+    # print(opt_output)
+    return xst_opt, fst_opt, exitflag_opt, success_opt
 
 ## #################################################################  
-# Approach 1: one perturbation, one opt dv
+# Approach 1: One perturbed variable, one optimization variable, one perturbation
 def jacobian_app1():
     n_sweeps = 2
     percent = 0.01
@@ -896,6 +908,8 @@ def jacobian_app1():
         fst_opt_fixed = np.zeros((n_sweeps,len(AllDesign_Parms)))
         grad_x_st = np.zeros((len(AllDesign_Parms),))
         grad_f_st = np.zeros((len(AllDesign_Parms),))
+        x_lb = bounds_ordered[0,q]
+        x_ub = bounds_ordered[1,q]
         
         for p in range(len(AllDesign_Parms)):
             # design parameters (fixed)
@@ -904,8 +918,8 @@ def jacobian_app1():
             # Sweep parameter (perturbed)
             Sweep_Parms = AllDesign_Parms[p]
             Sweep_Parms_indx = DCA_problem['DesignVars']["DesignVars_keys"].index(Sweep_Parms)
-            lb = bounds[0,Sweep_Parms_indx]
-            ub = bounds[1,Sweep_Parms_indx]
+            lb = bounds_ordered[0,Sweep_Parms_indx]
+            ub = bounds_ordered[1,Sweep_Parms_indx]
             x0_Sweep_Parms = DCA_problem['DesignVars']["DesignVars_x0"][Sweep_Parms_indx]
             points = gen_sweep_points(x0_Sweep_Parms, percent, n_sweeps, lb, ub)
      
@@ -924,10 +938,8 @@ def jacobian_app1():
                    
                 xst_opt_fixed[sweep_ind,p], fst_opt_fixed[sweep_ind,p], exit_flag= opt_sweep(DCA_req_fixed,opt_filename,fname_ccdc_options)
                 exitflag.append(exit_flag)   
-            # print(fst_opt_fixed, 'fst_opt_fixed')  
     
-        x_lb = bounds[0,q]
-        x_ub = bounds[1,q]
+        
         xst_opt_fixed_scaled = (xst_opt_fixed-x_lb)/(x_ub-x_lb)
         dx_scaled = (points-points[0])/(points[-1]-points[0])
         
@@ -955,36 +967,41 @@ def jacobian_app1():
 # dc_jacobian, obj_jacobian, exitflag_jac =  jacobian_app1()   
 
 ## #################################################################  
-# Approach 2
+# Approach 2: One perturbed variable, one optimization variable, multiple sweeps
 def jacobian_app2():
     n_sweeps = 100
+    # n_sweeps = 4
     fst_opt_fixed = np.zeros((n_sweeps,len(req_dv)-1))
     x_jac = np.zeros((len(req_dv),len(req_dv)-1))
     exitflag = [] 
+    succflag = [] 
     gobj_st = np.zeros((len(req_dv),len(req_dv)-1))
-    for q in range(len(req_dv)):
+    for q in range(len(req_dv)):    
     
-        Design_Vars = req_dv[q]          
+        Design_Vars = req_dv[q]   
+        # print('design vars', Design_Vars)       
         AllDesign_Parms = req_dv[:q] + req_dv[q+1:]
         AllDesign_Parms_x0 = DCA_problem['DesignVars']['DesignVars_x0'][:q] + DCA_problem['DesignVars']['DesignVars_x0'][q+1:] 
         xst_opt_fixed = np.zeros((n_sweeps,len(AllDesign_Parms)))
+        xst_opt_fixed_scaled = np.zeros((n_sweeps,len(AllDesign_Parms)))
         grad_x_st = np.zeros((len(AllDesign_Parms),))
         grad_f_st = np.zeros((len(AllDesign_Parms),))
-        
+        x_lb = bounds_ordered[0,q]
+        x_ub = bounds_ordered[1,q]
+        # print('dv bounds', x_lb, x_ub)
         for p in range(len(AllDesign_Parms)):
             Sweep_Parms = AllDesign_Parms[p]
             Design_Parms = AllDesign_Parms[:p] + AllDesign_Parms[p+1:]
             Design_Parms_x0 = AllDesign_Parms_x0[:p] + AllDesign_Parms_x0[p+1:]
-            
+            parms_indx = DCA_problem['DesignVars']["DesignVars_keys"].index(Sweep_Parms)
+            lb = bounds_ordered[0,parms_indx]
+            ub = bounds_ordered[1,parms_indx]
+            x0_parms = DCA_problem['DesignVars']["DesignVars_x0"][parms_indx]
+            points = np.linspace(lb, ub, n_sweeps)
+            # print('sweep params', Sweep_Parms)  
+            # print(' bounds', lb, ub)
             for sweep_ind in range(n_sweeps):
-                
-                parms_indx = DCA_problem['DesignVars']["DesignVars_keys"].index(Sweep_Parms)
-                lb = bounds[0,parms_indx]
-                ub = bounds[1,parms_indx]
-                
-                x0_parms = DCA_problem['DesignVars']["DesignVars_x0"][parms_indx]
-                
-                points = np.linspace(lb, ub, n_sweeps)
+               
                 xp = points[sweep_ind]
                     
                 DCA_req_fixed = {}
@@ -996,16 +1013,12 @@ def jacobian_app2():
                 DCA_req_fixed['DesignVars']["DesignVars_keys"] = [Design_Vars]
                 DCA_req_fixed['objective'] = DCA_problem["objective"]
                 
-                xst_opt_fixed[sweep_ind,p], fst_opt_fixed[sweep_ind,p], exit_flag= opt_sweep(DCA_req_fixed,opt_filename,fname_ccdc_options)
+                xst_opt_fixed[sweep_ind,p], fst_opt_fixed[sweep_ind,p], exit_flag, succ_flag = opt_sweep(DCA_req_fixed,opt_filename,fname_ccdc_options)
                 exitflag.append(exit_flag)   
-    
-        
-        x_lb = bounds[0,q]
-        x_ub = bounds[1,q]
-        xst_opt_fixed_scaled = (xst_opt_fixed-x_lb)/(x_ub-x_lb)
-        dx_scaled = (points-points[0])/(points[-1]-points[0])
-        
-        for p in range(len(AllDesign_Parms)):
+                succflag.append(succ_flag)   
+                
+            xst_opt_fixed_scaled[:,p] = (xst_opt_fixed[:,p]-x_lb)/(x_ub-x_lb)
+            dx_scaled = (points-points[0])/(points[-1]-points[0])
             grad_x_st[p] =  np.linalg.norm(np.gradient(xst_opt_fixed_scaled[:,p], dx_scaled.T))
             grad_f_st[p] =  np.linalg.norm(np.gradient(fst_opt_fixed[:,p]/fx0, dx_scaled.T))
             
@@ -1023,12 +1036,12 @@ def jacobian_app2():
         dc_jacobian[i, i+1:] = x_jac[i, i:]
         obj_jacobian[i, :i] = gobj_st[i, :i]
         obj_jacobian[i, i+1:] = gobj_st[i, i:]
-    
+
     return dc_jacobian, obj_jacobian, exitflag
 # dc_jacobian, obj_jacobian, exitflag_jac =  jacobian_app2()  
 
 # ## #################################################################  
-# # Approach 3 
+# # Approach 3: One perturbed variable, multiple optimization variables, one perturbation 
 def jacobian_app3():
     n_sweeps = 2
     percent = 0.01
@@ -1037,8 +1050,6 @@ def jacobian_app3():
         
     x_jac = np.zeros((len(req_dv),len(req_dv)-1))
     exitflag = [] 
-    constraint_violationv = []   
-    first_order_optimalityv = []  
     gobj_st = np.zeros((len(req_dv),))
     for q in range(len(req_dv)):
     
@@ -1046,16 +1057,15 @@ def jacobian_app3():
         Design_Vars = req_dv[:q] + req_dv[q+1:]
         AllDesign_Parms_x0 = DCA_problem['DesignVars']['DesignVars_x0'][:q] + DCA_problem['DesignVars']['DesignVars_x0'][q+1:] 
         xst_opt_fixed = np.zeros((n_sweeps,len(Design_Vars)))
+        xst_opt_fixed_scaled = np.zeros((n_sweeps,len(Design_Vars)))
         grad_x_st = np.zeros((len(Design_Vars),))
-        
-            
+        parms_indx = DCA_problem['DesignVars']["DesignVars_keys"].index(Sweep_Parms)
+        lb = bounds_ordered[0,parms_indx]
+        ub = bounds_ordered[1,parms_indx]
+        x0_parms = DCA_problem['DesignVars']["DesignVars_x0"][parms_indx]  
+        points = gen_sweep_points(x0_parms, percent, n_sweeps, lb, ub)
         for sweep_ind in range(n_sweeps):
             
-            parms_indx = DCA_problem['DesignVars']["DesignVars_keys"].index(Sweep_Parms)
-            lb = bounds[0,parms_indx]
-            ub = bounds[1,parms_indx]
-            x0_parms = DCA_problem['DesignVars']["DesignVars_x0"][parms_indx]
-            points = gen_sweep_points(x0_parms, percent, n_sweeps, lb, ub)
             xp = points[sweep_ind]
                 
             DCA_req_fixed = {}
@@ -1066,23 +1076,19 @@ def jacobian_app3():
             DCA_req_fixed['DesignVars'] = {}
             DCA_req_fixed['DesignVars']["DesignVars_keys"] = Design_Vars
             DCA_req_fixed['objective'] = DCA_problem["objective"]
-               
-            xst_opt_fixed[sweep_ind,:], fst_opt_fixed[sweep_ind], exit_flag= opt_sweep(DCA_req_fixed,opt_filename,fname_ccdc_options)
+            xst_opt_fixed[sweep_ind,:], fst_opt_fixed[sweep_ind], exit_flag = opt_sweep(DCA_req_fixed,opt_filename,fname_ccdc_options)
             exitflag.append(exit_flag) 
-            
         
-        x_lb = bounds[0,q]
-        x_ub = bounds[1,q]
-        xst_opt_fixed_scaled = (xst_opt_fixed-x_lb)/(x_ub-x_lb)
         dx_scaled = (points-points[0])/(points[-1]-points[0])
         gobj_st[q] = np.linalg.norm(np.gradient(fst_opt_fixed/fx0,  dx_scaled.T))
         
         for p in range(len(Design_Vars)):
+            x_lb = bounds_ordered[0,p]
+            x_ub = bounds_ordered[1,p]
+            xst_opt_fixed_scaled[:,p]  = (xst_opt_fixed[:,p]-x_lb)/(x_ub-x_lb)
             grad_x_st[p] =  np.linalg.norm(np.gradient(xst_opt_fixed_scaled[:,p], dx_scaled.T))
-            
-            
+              
         x_jac[q,:]=grad_x_st.T
-    
     
     dc_jacobian = np.zeros((len(req_dv), len(req_dv)), dtype=float)
     obj_jacobian = gobj_st.T
@@ -1096,7 +1102,7 @@ def jacobian_app3():
 # dc_jacobian, obj_jacobian, exitflag_jac =  jacobian_app3()  
 
 # ## #################################################################  
-# # Approach 4 
+# # Approach 4: One perturbed variable, multiple optimization variables, multiple sweeps
 def jacobian_app4():
     n_sweeps = 100
     
@@ -1108,21 +1114,20 @@ def jacobian_app4():
     first_order_optimalityv = []  
     gobj_st = np.zeros((len(req_dv),))
     for q in range(len(req_dv)):
-    
-        Sweep_Parms = req_dv[q]          
+        
+        Sweep_Parms = req_dv[q]     
         Design_Vars = req_dv[:q] + req_dv[q+1:]
         AllDesign_Parms_x0 = DCA_problem['DesignVars']['DesignVars_x0'][:q] + DCA_problem['DesignVars']['DesignVars_x0'][q+1:] 
         xst_opt_fixed = np.zeros((n_sweeps,len(Design_Vars)))
         grad_x_st = np.zeros((len(Design_Vars),))
-        
-            
+        xst_opt_fixed_scaled = np.zeros((n_sweeps,len(Design_Vars)))
+        parms_indx = DCA_problem['DesignVars']["DesignVars_keys"].index(Sweep_Parms)
+        lb = bounds_ordered[0,parms_indx]
+        ub = bounds_ordered[1,parms_indx]
+        x0_parms = DCA_problem['DesignVars']["DesignVars_x0"][parms_indx]
+        points = np.linspace(lb, ub, n_sweeps)
         for sweep_ind in range(n_sweeps):
             
-            parms_indx = DCA_problem['DesignVars']["DesignVars_keys"].index(Sweep_Parms)
-            lb = bounds[0,parms_indx]
-            ub = bounds[1,parms_indx]
-            x0_parms = DCA_problem['DesignVars']["DesignVars_x0"][parms_indx]
-            points = np.linspace(lb, ub, n_sweeps)
             xp = points[sweep_ind]
                 
             DCA_req_fixed = {}
@@ -1133,17 +1138,18 @@ def jacobian_app4():
             DCA_req_fixed['DesignVars'] = {}
             DCA_req_fixed['DesignVars']["DesignVars_keys"] = Design_Vars
             DCA_req_fixed['objective'] = DCA_problem["objective"]
-               
+            
             xst_opt_fixed[sweep_ind,:], fst_opt_fixed[sweep_ind], exit_flag= opt_sweep(DCA_req_fixed,opt_filename,fname_ccdc_options)
             exitflag.append(exit_flag) 
-           
-        x_lb = bounds[0,q]
-        x_ub = bounds[1,q]
-        xst_opt_fixed_scaled = (xst_opt_fixed-x_lb)/(x_ub-x_lb)
+        
         dx_scaled = (points-points[0])/(points[-1]-points[0])
         gobj_st[q] = np.linalg.norm(np.gradient(fst_opt_fixed/fx0,  dx_scaled.T))
         
         for p in range(len(Design_Vars)):
+            
+            x_lb = bounds_ordered[0,p]
+            x_ub = bounds_ordered[1,p]
+            xst_opt_fixed_scaled[:,p] = (xst_opt_fixed[:,p]-x_lb)/(x_ub-x_lb)
             grad_x_st[p] =  np.linalg.norm(np.gradient(xst_opt_fixed_scaled[:,p], dx_scaled.T))
             
             
@@ -1158,14 +1164,14 @@ def jacobian_app4():
         dc_jacobian[i, i+1:] = x_jac[i, i:] 
         
     return dc_jacobian, obj_jacobian, exitflag
-dc_jacobian, obj_jacobian, exitflag_jac =  jacobian_app4()          
+# dc_jacobian, obj_jacobian, exitflag_jac =  jacobian_app4()          
 
-non0_exitf_ind = np.nonzero(exitflag_jac)[0]
-non0_exitf = np.zeros((len(non0_exitf_ind),))
-for i in range(len(non0_exitf_ind)):
-    non0_exitf[i] = exitflag_jac[non0_exitf_ind[i]]
+# non0_exitf_ind = np.nonzero(exitflag_jac)[0]
+# non0_exitf = np.zeros((len(non0_exitf_ind),))
+# for i in range(len(non0_exitf_ind)):
+#     non0_exitf[i] = exitflag_jac[non0_exitf_ind[i]]
     
-    
+# %%    
 #Labels for the Jacobian plots
 def get_plot_labels(req_dv):
     labels = []
@@ -1281,5 +1287,5 @@ def plot_dfdx(dfdx_mat,labels_l):
     plt.show()
 
 
-plot_dfdx(obj_jacobian,labels_l)
-plot_dxdx(dc_jacobian,labels_l)
+# plot_dfdx(obj_jacobian,labels_l)
+# plot_dxdx(dc_jacobian,labels_l)
