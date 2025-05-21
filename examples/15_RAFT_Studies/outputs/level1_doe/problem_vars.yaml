@@ -1,0 +1,45 @@
+design_vars:
+   -     -  floating.memgrp0.outer_diameter_in
+         -  name: floating.memgrp0.outer_diameter_in
+            upper: 14.0
+            lower: 6.0
+            size: ''
+            val: [7.7074612198822745]
+   -     -  floating.memgrp1.outer_diameter_in
+         -  name: floating.memgrp1.outer_diameter_in
+            upper: 12.5
+            lower: 12.5
+            size: ''
+            val: [12.5]
+   -     -  floating.memgrp2.outer_diameter_in
+         -  name: floating.memgrp2.outer_diameter_in
+            upper: 0.91
+            lower: 0.91
+            size: ''
+            val: [0.91]
+   -     -  floating.memgrp3.outer_diameter_in
+         -  name: floating.memgrp3.outer_diameter_in
+            upper: 13.6148
+            lower: 6.6148
+            size: ''
+            val: [7.706429081298037]
+constraints:
+   -     -  raft.max_nac_accel
+         -  name: raft.max_nac_accel
+            lower: -1e+30
+            upper: 0.7
+            equals: ''
+            size: ''
+            val: [0.6892371328861002]
+   -     -  raft.Max_PtfmPitch
+         -  name: raft.Max_PtfmPitch
+            lower: -1e+30
+            upper: 6.9
+            equals: ''
+            size: ''
+            val: [6.900000097379184]
+objectives:
+   -     -  raft.platform_mass
+         -  name: raft.platform_mass
+            size: ''
+            val: [11.370192206509232]
