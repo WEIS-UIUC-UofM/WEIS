@@ -137,7 +137,7 @@ driver:
 recorder:
   flag: False              # Flag to activate OpenMDAO recorder
   # file_name: log_opt_level1.sql  # Name of OpenMDAO recorder
-  file_name: log_opt_600.sql  # Name of OpenMDAO recorder 
+  file_name: log_opt_750.sql  # Name of OpenMDAO recorder 
   includes: ['*'] #['*raft*','*floating*','*platform*']
 
 
