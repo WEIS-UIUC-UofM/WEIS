@@ -3,13 +3,15 @@ general:
     fname_output: refturb_output
     
 SMB_optimization:
-        solver: SLSQP
+        # solver: SLSQP
         # solver: COBYLA
         # solver: NSGA2
-        # solver: IPOPT
+        solver: IPOPT
         tol: 1.e-5
-        max_iter: 1300000
-        max_function_calls: 1500000
+        # max_iter: 1300000
+        # max_function_calls: 1500000
+        max_iter: 1300
+        max_function_calls: 1500
             
 DC_analysis:
         flag: True

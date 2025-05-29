@@ -44,7 +44,7 @@ opt_filename ='opt_output' + '.pkl'
 ####################################################################
 
 sm_file = os.path.join(folder_output, os.path.splitext(opt_options['recorder']['file_name'])[0] + '.smt')
-fname_ccdc_options = ex_dir + "ccdc_options1.yaml"
+fname_ccdc_options = ex_dir + "ccdc_options.yaml"
 ccdc_options = load_yaml(fname_ccdc_options) 
 WTSMO = WindTurbineSMOpt(ccdc_options)
 WTSMO.read_sm(sm_file, modeling_options)
@@ -1038,7 +1038,7 @@ def jacobian_app2():
         obj_jacobian[i, i+1:] = gobj_st[i, i:]
 
     return dc_jacobian, obj_jacobian, exitflag
-# dc_jacobian, obj_jacobian, exitflag_jac =  jacobian_app2()  
+dc_jacobian, obj_jacobian, exitflag_jac =  jacobian_app2()  
 
 # ## #################################################################  
 # # Approach 3: One perturbed variable, multiple optimization variables, one perturbation 
@@ -1287,5 +1287,5 @@ def plot_dfdx(dfdx_mat,labels_l):
     plt.show()
 
 
-# plot_dfdx(obj_jacobian,labels_l)
-# plot_dxdx(dc_jacobian,labels_l)
+plot_dfdx(obj_jacobian,labels_l)
+plot_dxdx(dc_jacobian,labels_l)
