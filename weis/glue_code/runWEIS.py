@@ -33,7 +33,8 @@ def run_weis(fname_wt_input, fname_modeling_options, fname_opt_options, geometry
     # Initialize openmdao problem. If running with multiple processors in MPI, use parallel finite differencing equal to the number of cores used.
     # Otherwise, initialize the WindPark system normally. Get the rank number for parallelization. We only print output files using the root processor.
     myopt = PoseOptimizationWEIS(wt_init, modeling_options, opt_options)
-
+    SKIP_DRIVER = False
+    SKIP_SMT = False
     if MPI:
         n_DV = myopt.get_number_design_variables()
         # Extract the number of cores available
@@ -166,6 +167,7 @@ def run_weis(fname_wt_input, fname_modeling_options, fname_opt_options, geometry
         # Setup openmdao problem
         if opt_options['opt_flag']:
             wt_opt.setup()
+            
         else:
             # If we're not performing optimization, we don't need to allocate
             # memory for the derivative arrays.
@@ -228,8 +230,8 @@ def run_weis(fname_wt_input, fname_modeling_options, fname_opt_options, geometry
         sys.stdout.flush()
 
         # DOE and SMT skip logics
-        SKIP_DRIVER = False
-        SKIP_SMT = False
+        # SKIP_DRIVER = False
+        # SKIP_SMT = False
         sm_filename = os.path.join(folder_output, os.path.splitext(opt_options['recorder']['file_name'])[0] + '.smt')
         sql_filename = os.path.join(folder_output, opt_options['recorder']['file_name'])
         if MPI and max_cores>1:
@@ -258,6 +260,7 @@ def run_weis(fname_wt_input, fname_modeling_options, fname_opt_options, geometry
         if opt_options['opt_flag']:
             if not SKIP_DRIVER:
                 wt_opt.run_driver()
+                
         else:
             wt_opt.run_model()
 

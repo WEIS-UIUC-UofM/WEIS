@@ -119,10 +119,10 @@ merit_figure: platform_mass  # Merit figure of the optimization problem. The opt
 
 driver:
   optimization:
-    flag: False           # Flag to enable optimization
-    solver: SLSQP #LN_COBYLA         # Optimization solver. Other options are 'SLSQP' - 'CONMIN'
+    flag: True           # Flag to enable optimization
+    solver: LN_COBYLA #LN_COBYLA         # Optimization solver. Other options are 'SLSQP' - 'CONMIN'
     tol: 1.e-5            # Optimality tolerance
-    max_iter: 3000         # Maximum number of iterations (SLSQP)
+    max_iter: 700         # Maximum number of iterations (SLSQP)
   design_of_experiments:
     flag: False            # Flag to enable design of experiments
     run_parallel: False    # Flag to run using parallel processing
@@ -131,13 +131,13 @@ driver:
     num_samples: 50     # number of samples for (Uniform only)
     levels: 1
     skip_if_results_exist: True
-    train_surrogate_model: True
+    train_surrogate_model: False
 
 
 recorder:
-  flag: False              # Flag to activate OpenMDAO recorder
+  flag: True              # Flag to activate OpenMDAO recorder
   # file_name: log_opt_level1.sql  # Name of OpenMDAO recorder
-  file_name: log_opt_750.sql  # Name of OpenMDAO recorder 
+  file_name: log_opt_lev3.sql  # Name of OpenMDAO recorder 
   includes: ['*'] #['*raft*','*floating*','*platform*']
 
 
