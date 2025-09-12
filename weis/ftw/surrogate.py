@@ -198,7 +198,7 @@ class WTsurrogate:
                 ub_in[0,idx] = ub_in[0,idx] + 0.5*np.abs(ub_in[0,idx])
         lb_out = np.min(output_array, axis=0).reshape(1,-1)
         ub_out = np.max(output_array, axis=0).reshape(1,-1)
-        const_out = const_out = np.zeros(shape=lb_out.shape, dtype=int)
+        const_out = np.zeros(shape=lb_out.shape, dtype=int)
         for idx in range(lb_out.shape[1]):
             # If all values are (nearly) identical, use the scale of values
             if (ub_out[0,idx] - lb_out[0,idx]) < 10.0*np.finfo(np.float64).eps:
@@ -227,9 +227,11 @@ class WTsurrogate:
                     bounds_in=bounds_in, bounds_out=bounds_out_train)
             else:
                 # Surrogate model training for non-constant outputs
-                sm = surrogate_model(smtype='SGP', # SGP: Sparse Gaussian Process
-                    bounds_in=bounds_in, bounds_out=bounds_out_train,
-                    eval_noise=True, print_global=False)
+                # sm = surrogate_model(smtype='SGP', # SGP: Sparse Gaussian Process
+                #     bounds_in=bounds_in, bounds_out=bounds_out_train,
+                #     eval_noise=True, print_global=False)
+                sm = surrogate_model(smtype='KPLSK', # KPLSK: a KPLS-based model and is basically built in two steps (KPLS + original Kriging) / KPLS: a kriging model that uses the partial least squares (PLS) method.
+                    bounds_in=bounds_in, bounds_out=bounds_out_train, print_global=True)
                 sm.training(input_array, output_array_train)
                 print('surrogate model trained for output variable {:}'.format(idx+1))
             sm_list.append({
