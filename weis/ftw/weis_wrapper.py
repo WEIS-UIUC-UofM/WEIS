@@ -2,7 +2,7 @@ import numpy as np
 import os, sys
 import warnings
 import openmdao.api as om
-from copy                               import copy
+from copy                               import copy, deepcopy
 from weis.glue_code.gc_LoadInputs       import WindTurbineOntologyPythonWEIS
 from weis.glue_code.gc_PoseOptimization import PoseOptimizationWEIS
 from openmdao.utils.mpi                 import MPI
@@ -96,10 +96,23 @@ def ftw_doe(fname_wt_input, fname_modeling_options, fname_opt_options, geometry_
     if opt_options['driver']['design_of_experiments']['generator'] != 'LatinHypercube':
         warnings.warn('LatinHypercube generator with sufficient number of samples is recommended.')
 
+    opt_override_baseline = deepcopy(opt_override)
+    opt_override_baseline['general'] = {} 
+    opt_override_baseline['general']['fname_output'] = opt_options['general']['fname_output'] + '_baseline'
+    fname_recorder_override = os.path.splitext(opt_options['recorder']['file_name'])
+    opt_override_baseline['recorder']['file_name'] = fname_recorder_override[0] + '_baseline' + fname_recorder_override[1]
+    opt_override_baseline['driver']['design_of_experiments']['flag'] = False
+
+    # Run Baseline Simulation
+    wt_baseline, modeling_options_baseline, opt_options_baseline = weis_main(
+        fname_wt_input, fname_modeling_options, fname_opt_options,
+        geometry_override, {}, opt_override_baseline, test_run)
+
     # Run DOE (in parallel if MPI is used)
     wt_opt_doe, modeling_options_doe, opt_options_doe = weis_main(
         fname_wt_input, fname_modeling_options, fname_opt_options,
         geometry_override, {}, opt_override, test_run)
+    #problem_var_dict = wt_opt_doe.list_driver_vars(desvar_opts=["lower", "upper",], cons_opts=["lower", "upper", "equals",])
 
     # OpenMDAO case reader - obtain list of cases
     cr = om.CaseReader(recorder_output_path)
@@ -111,16 +124,24 @@ def ftw_doe(fname_wt_input, fname_modeling_options, fname_opt_options, geometry_
         case = cr.get_case(cases[0])
 
         # Design variables (inputs of the surrogate model)
-        design_vars = list(case.get_design_vars().keys())
+        design_vars_info = case.get_design_vars()
+        design_vars = list(design_vars_info.keys())
+        design_vars.sort()
         # Constraint variables (outputs of the surrogate model)
-        constraint_vars = list(case.get_constraints().keys())
+        constraint_vars_info = case.get_constraints()
+        constraint_vars = list(constraint_vars_info.keys())
+        constraint_vars.sort()
         # Objective variables (outputs of the surrogate model)
-        objective_vars = list(case.get_objectives().keys())
+        objective_vars_info = case.get_objectives()
+        objective_vars = list(objective_vars_info.keys())
+        objective_vars.sort()
         # Additional output variables (outputs of the surrogate model)
-        additional_output_vars = opt_options['recorder']['surrogate_model_outputs']
+        additional_output_vars = list(opt_options['recorder']['surrogate_model_outputs'])
+        additional_output_vars.sort()
 
         # Combine list of variables (combine and remain unique items)
         all_vars = list(set(design_vars + constraint_vars + objective_vars + additional_output_vars))
+        all_vars.sort()
         # Split variables into inputs and outputs of surrogate model
         input_vars = design_vars
         input_vars.sort()
@@ -254,26 +275,124 @@ def ftw_doe(fname_wt_input, fname_modeling_options, fname_opt_options, geometry_
         doedata = {
             'input': [],
             'output': [],
+            'baseline': {'design_vars': [], 'constraint_vars': [], 'objective_vars': []},
         }
 
         # Input variables
         for idx in range(len(input_vars)):
+            lower, upper = vars_descaling(
+                design_vars_info._var_info[input_vars[idx]]['lower'], design_vars_info._var_info[input_vars[idx]]['upper'],
+                design_vars_info._var_info[input_vars[idx]]['ref'], design_vars_info._var_info[input_vars[idx]]['ref0'])
             doedata['input'].append({
                 'name': input_vars[idx],
                 'data': input_dataset[idx],
                 'len': input_lens[idx],
-                'vec': input_vecs[idx]})
+                'vec': input_vecs[idx],
+                'lower': lower,
+                'upper': upper})
 
         # Output variables
         for idx in range(len(output_vars)):
+            if output_vars[idx] in constraint_vars:
+                lower, upper = vars_descaling(
+                    constraint_vars_info._var_info[output_vars[idx]]['lower'], constraint_vars_info._var_info[output_vars[idx]]['upper'],
+                    constraint_vars_info._var_info[output_vars[idx]]['ref'], constraint_vars_info._var_info[output_vars[idx]]['ref0'])
+            else:
+                lower = None
+                upper = None
             doedata['output'].append({
                 'name': output_vars[idx],
                 'data': output_dataset[idx],
                 'len': output_lens[idx],
-                'vec': output_vecs[idx]})
+                'vec': output_vecs[idx],
+                'lower': lower,
+                'upper': upper})
+            
+        # Baseline problem definition
+        for idx in range(len(input_vars)):
+            lower, upper = vars_descaling(
+                design_vars_info._var_info[input_vars[idx]]['lower'], design_vars_info._var_info[input_vars[idx]]['upper'],
+                design_vars_info._var_info[input_vars[idx]]['ref'], design_vars_info._var_info[input_vars[idx]]['ref0'])
+            doedata['baseline']['design_vars'].append({
+                'name': input_vars[idx],
+                'lower': lower,
+                'upper': upper,
+                'value': wt_baseline.get_val(input_vars[idx]),
+            })
+        for idx in range(len(constraint_vars)):
+            lower, upper = vars_descaling(
+                constraint_vars_info._var_info[constraint_vars[idx]]['lower'], constraint_vars_info._var_info[constraint_vars[idx]]['upper'],
+                constraint_vars_info._var_info[constraint_vars[idx]]['ref'], constraint_vars_info._var_info[constraint_vars[idx]]['ref0'])
+            if (lower == None) and (not upper == None):
+                if len(wt_baseline.get_val(constraint_vars[idx]).flatten()) > 1:
+                    value = [np.max(wt_baseline.get_val(constraint_vars[idx]).flatten())]
+                else:
+                    value = wt_baseline.get_val(constraint_vars[idx])
+            elif (not lower == None) and (upper == None):
+                if len(wt_baseline.get_val(constraint_vars[idx]).flatten()) > 1:
+                    value = [np.min(wt_baseline.get_val(constraint_vars[idx]).flatten())]
+                else:
+                    value = wt_baseline.get_val(constraint_vars[idx])
+            else:
+                value = wt_baseline.get_val(constraint_vars[idx])
+            doedata['baseline']['constraint_vars'].append({
+                'name': constraint_vars[idx],
+                'lower': lower,
+                'upper': upper,
+                'value': value,
+            })
+        for idx in range(len(objective_vars)):
+            doedata['baseline']['objective_vars'].append({
+                'name': objective_vars[idx],
+                'lower': None,
+                'upper': None,
+                'value': wt_baseline.get_val(objective_vars[idx]),
+            })
 
         # Save to yaml file: [output-folder]/[output-name]-doedata.yaml
         save_yaml(out_dir, fname_doedata, doedata)
 
     return doedata, fname_doedata, fname_sm, skip_training_if_sm_exist
 
+
+def vars_descaling(lower_scaled, upper_scaled, ref, ref0):
+    if ref == None:
+        # No scaling
+
+        if lower_scaled <= -1.0e20:
+            lower = None
+        else:
+            lower = lower_scaled
+
+        if upper_scaled >= +1.0e20:
+            upper = None
+        else:
+            upper = upper_scaled
+
+    elif ref0 == None:
+        # Simple scaling
+
+        if ref*lower_scaled <= -1.0e20:
+            lower = None
+        else:
+            lower = ref*lower_scaled
+
+        if ref*upper_scaled >= +1.0e20:
+            upper = None
+        else:
+            upper = ref*upper_scaled
+
+    else:
+        # Scaling with offset
+
+        if ref0 + (ref-ref0)*lower_scaled <= -1.0e20:
+            lower = None
+        else:
+            ref0 + (ref-ref0)*lower_scaled
+
+        if ref0 + (ref-ref0)*upper_scaled >= +1.0e20:
+            upper = None
+        else:
+            upper = ref0 + (ref-ref0)*upper_scaled
+    
+    return lower, upper
