@@ -14,7 +14,7 @@ fname_modeling_options = os.path.join(run_dir, "umaine_semi_raft_dc_modeling.yam
 fname_analysis_options = os.path.join(run_dir, "umaine_semi_raft_dc_analysis.yaml")
 geometry_override = {}
 modeling_override = {}
-analysis_override = {}
+analysis_override = {'driver': {'design_of_experiments': {'skip_doe_if_doedata_exist': False}}}
 
 # Run DOE to prepare for the surrogate model training
 doedata, fname_doedata, fname_smt, skip_training_if_sm_exist = ftw_doe(

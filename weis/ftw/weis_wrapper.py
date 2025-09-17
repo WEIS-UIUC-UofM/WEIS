@@ -325,12 +325,12 @@ def ftw_doe(fname_wt_input, fname_modeling_options, fname_opt_options, geometry_
                 constraint_vars_info._var_info[constraint_vars[idx]]['ref'], constraint_vars_info._var_info[constraint_vars[idx]]['ref0'])
             if (lower == None) and (not upper == None):
                 if len(wt_baseline.get_val(constraint_vars[idx]).flatten()) > 1:
-                    value = [np.max(wt_baseline.get_val(constraint_vars[idx]).flatten())]
+                    value = np.array([np.max(wt_baseline.get_val(constraint_vars[idx]).flatten())])
                 else:
                     value = wt_baseline.get_val(constraint_vars[idx])
             elif (not lower == None) and (upper == None):
                 if len(wt_baseline.get_val(constraint_vars[idx]).flatten()) > 1:
-                    value = [np.min(wt_baseline.get_val(constraint_vars[idx]).flatten())]
+                    value = np.array([np.min(wt_baseline.get_val(constraint_vars[idx]).flatten())])
                 else:
                     value = wt_baseline.get_val(constraint_vars[idx])
             else:
