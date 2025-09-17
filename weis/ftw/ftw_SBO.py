@@ -132,6 +132,7 @@ class WindTurbineSMOpt():
         self.smb_options = smb_options
         self.wt_init = wt_init
         self.modeling_options = modeling_options
+        return smb_options, wt_init, modeling_options
     
     def create_problem(self, fname_wt_input, fname_modeling_options, fname_analysis_options, modeling_override):
         self.get_opt_options(fname_wt_input, fname_modeling_options, fname_analysis_options, modeling_override)
@@ -237,16 +238,16 @@ class WindTurbineSMOpt():
         
         # prob.model.list_inputs() #used for debugging
         # prob.model.list_outputs()
-        prob.list_driver_vars(print_arrays=True,
-                      desvar_opts=['lower', 'upper', 'ref', 'ref0',
-                                    'indices', 'adder', 'scaler',
-                                    'parallel_deriv_color', 'min', 'max'],
-                      cons_opts=['lower', 'upper', 'equals', 'ref', 'ref0',
-                                  'indices', 'adder', 'scaler', 'linear', 'min', 'max'],
-                      objs_opts=['ref', 'ref0',
-                                  'indices', 'adder', 'scaler',
-                                  'parallel_deriv_color',
-                                  'cache_linear_solution'])
+        # prob.list_driver_vars(print_arrays=False,
+        #               desvar_opts=['lower', 'upper', 'ref', 'ref0',
+        #                             'indices', 'adder', 'scaler',
+        #                             'parallel_deriv_color', 'min', 'max'],
+        #               cons_opts=['lower', 'upper', 'equals', 'ref', 'ref0',
+        #                           'indices', 'adder', 'scaler', 'linear', 'min', 'max'],
+        #               objs_opts=['ref', 'ref0',
+        #                           'indices', 'adder', 'scaler',
+        #                           'parallel_deriv_color',
+        #                           'cache_linear_solution'])
         self.objective_key_clean=objective_key_clean
         
        
@@ -278,7 +279,8 @@ class WindTurbineSMOpt():
           "objective": {"objective_keys": self.objective_key[0], "objective_values":objective_st},
           "constraints":{"constraints_keys": [], "constraints_values":np.zeros((len(self.constraints_key),))}, 
           "success": prob.driver.result.success,
-          "exit_flag": exit_flag
+          "exit_flag": exit_flag,
+          # 'driver_out': prob.driver.result
           
         }
         # print(prob.driver.opt_settings) 
@@ -294,7 +296,7 @@ class WindTurbineSMOpt():
         # print('raft.Std_PtfmPitch', prob.get_val('raft_Std_PtfmPitch'))
         # print('raft.heave_period', prob.get_val('raft_heave_period'))
         # print('raft.pitch_period', prob.get_val('raft_pitch_period'))
-        print(prob.driver.result)
+        # print(prob.driver.result)
         for k in range(len(self.constraints_key)):
             cons_val = prob.get_val(self.constraints_key_clean[k]) 
             opt_output['constraints']['constraints_keys'].append(self.constraints_key[k])

@@ -37,7 +37,7 @@ y, v = WTSM.predict(x)
 print(y)
 print(v)
 
-
+# %%
 
 def run_model():    #run model w/o optimization to get x0
     #create copies of the analysis and modeling yaml
@@ -78,6 +78,8 @@ def run_model():    #run model w/o optimization to get x0
     return wt_opt_sim
 
 WTSMO = WindTurbineSMOpt()
+
+# %%
 avail_input_keys = WTSMO.get_inputs(doedata)
 #get x0 values and f(x0)
 DesignVars_x0 = np.zeros((len(avail_input_keys),))
@@ -86,7 +88,6 @@ for k in range(len(avail_input_keys)):
     var = avail_input_keys[k]
     x0 = wt_opt_sim.get_val(var)
     DesignVars_x0[k] = x0[0]  
-          
 
 DCA_req = {
     'DesignVars': {
