@@ -9,6 +9,7 @@ import logging
 import pickle
 from pathlib import Path
 from scipy.interpolate                      import PchipInterpolator
+import scipy.signal as sig
 from openmdao.api                           import ExplicitComponent
 from openmdao.utils.mpi import MPI
 from wisdem.commonse import NFREQ
@@ -35,9 +36,8 @@ from openfast_io.StC_defaults        import default_StC_vt
 from weis.aeroelasticse.CaseGen_General import case_naming
 from wisdem.inputs import load_yaml, write_yaml
 
-logger = logging.getLogger("wisdem/weis")
 
-weis_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+logger = logging.getLogger("wisdem/weis")
 
 def make_coarse_grid(s_grid, diam):
 
@@ -49,6 +49,58 @@ def make_coarse_grid(s_grid, diam):
     s_coarse.append(s_grid[-1])
     return np.array(s_coarse)
 
+def split_members(node_xyz, node, member_end_A, member_vec, rho_coarse, E_coarse, G_coarse, d_coarse, t_coarse, a_coarse, b_coarse, propID1, propID2, sub_N1, sub_N2, idx_circular_member, idx_rectangular_member):
+    d2A = node_xyz - member_end_A
+    d2line = np.ones(len(member_vec))*1e6
+    # Compute the distance from point to line for each member
+    for k in range(len(member_vec)):
+        if np.linalg.norm(member_vec[k,:]) > 1e-6:
+            d2line[k] = np.linalg.norm(np.cross(member_vec[k,:], d2A[k,:]) / np.linalg.norm(member_vec[k,:]))
+    # Find the indices of the members where d2line < 1e-6
+    k1 = np.where(d2line < 1e-6)[0]
+    if len(k1) >0:
+        # Keep the MJointID1 on A but change the MJointID2 to the new joint
+        for k in k1:
+            # Compute the nondimensional projected point of d on member_vec
+            d_proj = np.dot(d2A[k,:], member_vec[k,:]) / np.linalg.norm(member_vec[k,:])**2
+            if d_proj <1 and d_proj > 0:
+                # interpolate to find the property set at this location
+                rho_temp = np.interp(d_proj, [0., 1.], [rho_coarse[sub_N1[k]-1], rho_coarse[sub_N2[k]-1]])
+                E_temp = np.interp(d_proj, [0., 1.], [E_coarse[sub_N1[k]-1], E_coarse[sub_N2[k]-1]])
+                G_temp = np.interp(d_proj, [0., 1.], [G_coarse[sub_N1[k]-1], G_coarse[sub_N2[k]-1]])
+                d_temp = np.interp(d_proj, [0., 1.], [d_coarse[sub_N1[k]-1], d_coarse[sub_N2[k]-1]])
+                t_temp = np.interp(d_proj, [0., 1.], [t_coarse[sub_N1[k]-1], t_coarse[sub_N2[k]-1]])
+                a_temp = np.interp(d_proj, [0., 1.], [a_coarse[sub_N1[k]-1], a_coarse[sub_N2[k]-1]])
+                b_temp = np.interp(d_proj, [0., 1.], [b_coarse[sub_N1[k]-1], b_coarse[sub_N2[k]-1]])
+
+                rho_coarse = np.append(rho_coarse, rho_temp)
+                E_coarse = np.append(E_coarse, E_temp)
+                G_coarse = np.append(G_coarse, G_temp)
+                d_coarse = np.append(d_coarse, d_temp)
+                t_coarse = np.append(t_coarse, t_temp)
+                a_coarse = np.append(a_coarse, a_temp)
+                b_coarse = np.append(b_coarse, b_temp)
+                
+                propsetID = len(rho_coarse) # New propset ID
+                old_propsetID = copy.deepcopy(propID2[k])
+
+                propID2[k] = propsetID  # Change the second prop set to the new one
+                propID1 = np.append(propID1, propsetID)  # The first prop set of the new member is the new inserted one
+                propID2 = np.append(propID2, old_propsetID)  # The second prop set of the new member is the old second prop set
+
+                # Change the joint ID
+                temp_ID = sub_N2[k]
+                sub_N2[k] = node[-1]  # Change the end joint of the existing member to the new joint
+                sub_N1 = np.append(sub_N1, node[-1])  # The start joint of the new member is the new inserted joint
+                sub_N2 = np.append(sub_N2, temp_ID)  # The end joint of the new member is the old end joint
+
+                # Add new propset
+                if k in idx_circular_member:
+                    idx_circular_member = np.append(idx_circular_member, len(propID1)-1)
+                elif k in idx_rectangular_member:
+                    idx_rectangular_member = np.append(idx_rectangular_member, len(propID1)-1)
+
+    return rho_coarse, E_coarse, G_coarse, d_coarse, t_coarse, a_coarse, b_coarse, propID1, propID2, sub_N1, sub_N2, idx_circular_member, idx_rectangular_member
     
 class FASTLoadCases(ExplicitComponent):
     def initialize(self):
@@ -65,17 +117,21 @@ class FASTLoadCases(ExplicitComponent):
         self.n_blades      = modopt['assembly']['number_of_blades']
         self.n_span        = n_span    = rotorse_options['n_span']
         self.n_pc          = n_pc      = rotorse_options['n_pc']
+        # Number of wind speeds for AEP calculation
+        self.n_ws_aep = n_ws_aep = modopt['DLC_driver']['n_ws_aep']
 
         # Environmental Conditions needed regardless of where model comes from
-        self.add_input('V_cutin',     val=0.0, units='m/s',      desc='Minimum wind speed where turbine operates (cut-in)')
-        self.add_input('V_cutout',    val=0.0, units='m/s',      desc='Maximum wind speed where turbine operates (cut-out)')
-        self.add_input('Vrated',      val=0.0, units='m/s',      desc='rated wind speed')
-        self.add_input('hub_height',                val=0.0, units='m', desc='hub height')
+        self.add_input('V_cutin', val=0.0, units='m/s', desc='Minimum wind speed where turbine operates (cut-in)')
+        self.add_input('V_cutout', val=0.0, units='m/s', desc='Maximum wind speed where turbine operates (cut-out)')
+        self.add_input('Vrated', val=0.0, units='m/s', desc='rated wind speed')
+        self.add_input('hub_height', val=0.0, units='m', desc='hub height')
         self.add_discrete_input('turbulence_class', val='A', desc='IEC turbulence class')
-        self.add_discrete_input('turbine_class',    val='I', desc='IEC turbine class')
-        self.add_input('Rtip',              val=0.0, units='m', desc='dimensional radius of tip')
-        self.add_input('shearExp',    val=0.0,                   desc='shear exponent')
+        self.add_discrete_input('turbine_class', val='I', desc='IEC turbine class')
+        self.add_input('Rtip', val=0.0, units='m', desc='dimensional radius of tip')
+        self.add_input('shearExp', val=0.0, desc='shear exponent')
         self.add_input('lifetime', val=25.0, units='yr', desc='Turbine design lifetime')
+        self.add_input('rho', val=1.225, units='kg/m**3', desc='density of air')
+
 
         if not self.options['modeling_options']['OpenFAST']['from_openfast']:
             self.n_pitch       = n_pitch   = rotorse_options['n_pitch_perf_surfaces']
@@ -87,7 +143,6 @@ class FASTLoadCases(ExplicitComponent):
             self.n_xy          = n_xy      = rotorse_options['n_xy'] # Number of coordinate points to describe the airfoil geometry
             self.n_aoa         = n_aoa     = rotorse_options['n_aoa']# Number of angle of attacks
             self.n_Re          = n_Re      = rotorse_options['n_Re'] # Number of Reynolds, so far hard set at 1
-            self.n_tab         = n_tab     = rotorse_options['n_tab']# Number of tabulated data. For distributed aerodynamic control this could be > 1
             
             self.te_ss_var       = rotorse_options['te_ss']
             self.te_ps_var       = rotorse_options['te_ps']
@@ -100,7 +155,6 @@ class FASTLoadCases(ExplicitComponent):
             self.n_xy          = n_xy      = rotorse_options['n_xy'] # Number of coordinate points to describe the airfoil geometry
             self.n_aoa         = n_aoa     = rotorse_options['n_aoa']# Number of angle of attacks
             self.n_Re          = n_Re      = rotorse_options['n_Re'] # Number of Reynolds, so far hard set at 1
-            self.n_tab         = n_tab     = rotorse_options['n_tab']# Number of tabulated data. For distributed aerodynamic control this could be > 1
 
             self.te_ss_var       = rotorse_options['te_ss']
             self.te_ps_var       = rotorse_options['te_ps']
@@ -118,7 +172,8 @@ class FASTLoadCases(ExplicitComponent):
             )
             self.add_input(
                 'le_location', 
-                val=np.zeros(n_span), 
+                val=np.zeros(n_span),
+                units='m',
                 desc='Leading-edge positions from a reference blade axis \
                 usually blade pitch axis). Locations are normalized by the \
                 local chord length. Positive in -x direction for airfoil-aligned coordinate system',
@@ -231,14 +286,13 @@ class FASTLoadCases(ExplicitComponent):
             self.add_input('theta',             val=np.zeros(n_span), units='deg', desc='twist at airfoil locations')
             self.add_input('rthick',            val=np.zeros(n_span), desc='relative thickness of airfoil distribution')
             self.add_input('ac',                val=np.zeros(n_span), desc='aerodynamic center of airfoil distribution')
-            self.add_input('pitch_axis',        val=np.zeros(n_span), desc='1D array of the chordwise position of the pitch axis (0-LE, 1-TE), defined along blade span.')
             self.add_input('Rhub',              val=0.0, units='m', desc='dimensional radius of hub')
-            self.add_input('airfoils_cl',       val=np.zeros((n_span, n_aoa, n_Re, n_tab)), desc='lift coefficients, spanwise')
-            self.add_input('airfoils_cd',       val=np.zeros((n_span, n_aoa, n_Re, n_tab)), desc='drag coefficients, spanwise')
-            self.add_input('airfoils_cm',       val=np.zeros((n_span, n_aoa, n_Re, n_tab)), desc='moment coefficients, spanwise')
+            self.add_input('airfoils_cl',       val=np.zeros((n_span, n_aoa, n_Re)), desc='lift coefficients, spanwise')
+            self.add_input('airfoils_cd',       val=np.zeros((n_span, n_aoa, n_Re)), desc='drag coefficients, spanwise')
+            self.add_input('airfoils_cm',       val=np.zeros((n_span, n_aoa, n_Re)), desc='moment coefficients, spanwise')
             self.add_input('airfoils_aoa',      val=np.zeros((n_aoa)), units='deg', desc='angle of attack grid for polars')
             self.add_input('airfoils_Re',       val=np.zeros((n_Re)), desc='Reynolds numbers of polars')
-            self.add_input('airfoils_UserProp',     val=np.zeros((n_span, n_Re, n_tab)), units='deg',desc='Airfoil control paremeter (i.e. flap angle)')
+            self.add_input('airfoils_UserProp',     val=np.zeros((n_span, n_Re)), units='deg',desc='Airfoil control paremeter (i.e. flap angle)')
 
             # Airfoil coordinates
             self.add_input('coord_xy_interp',   val=np.zeros((n_span, n_xy, 2)),              desc='3D array of the non-dimensional x and y airfoil coordinates of the airfoils interpolated along span for n_span stations. The leading edge is place at x=0 and y=0.')
@@ -258,16 +312,42 @@ class FASTLoadCases(ExplicitComponent):
             self.add_input("platform_I_total", np.zeros(6), units="kg*m**2")
 
             if modopt['flags']["floating"]:
-                n_member = modopt["floating"]["members"]["n_members"]
-                for k in range(n_member):
+                n_member_floatingse = modopt["floating"]["members"]["n_members"]
+                for k in range(n_member_floatingse):
+                    kname = modopt['floating']['members']['name'][k]
                     n_height_mem = modopt["floating"]["members"]["n_height"][k]
-                    self.add_input(f"member{k}:joint1", np.zeros(3), units="m")
-                    self.add_input(f"member{k}:joint2", np.zeros(3), units="m")
-                    self.add_input(f"member{k}:s", np.zeros(n_height_mem))
-                    self.add_input(f"member{k}:s_ghost1", 0.0)
-                    self.add_input(f"member{k}:s_ghost2", 0.0)
-                    self.add_input(f"member{k}:outer_diameter", np.zeros(n_height_mem), units="m")
-                    self.add_input(f"member{k}:wall_thickness", np.zeros(n_height_mem-1), units="m")
+                    self.add_input(f"member{k}_{kname}:joint1", np.zeros(3), units="m")
+                    self.add_input(f"member{k}_{kname}:joint2", np.zeros(3), units="m")
+                    self.add_input(f"member{k}_{kname}:s", np.zeros(n_height_mem))
+                    self.add_input(f"member{k}_{kname}:s_ghost1", 0.0)
+                    self.add_input(f"member{k}_{kname}:s_ghost2", 0.0)
+                    self.add_input(f"member{k}_{kname}:wall_thickness", np.zeros(n_height_mem-1), units="m")
+                    self.add_input(f"member{k}_{kname}:E", np.zeros(n_height_mem-1), units="Pa")
+                    self.add_input(f"member{k}_{kname}:G", np.zeros(n_height_mem-1), units="Pa")
+                    self.add_input(f"member{k}_{kname}:rho", np.zeros(n_height_mem-1), units="kg/m**3")
+
+                    self.add_input(f"member{k}_{kname}:ballast_z_cg", units="m")
+                    self.add_input(f"member{k}_{kname}:ballast_mass", units="kg")
+                    self.add_input(f"member{k}_{kname}:ballast_I_base", np.zeros(6), units="kg*m**2")
+                    self.add_input(f"member{k}_{kname}:variable_ballast_cg", np.zeros(3), units="m")
+                    self.add_input(f"member{k}_{kname}:variable_ballast_mass", 0.0, units="kg")
+                    self.add_input(f"member{k}_{kname}:variable_ballast_I", np.zeros(6), units="kg*m**2")
+                    self.add_input(f"member{k}_{kname}:bulkhead_mass", 0.0, units="kg")
+                    self.add_input(f"member{k}_{kname}:bulkhead_z_cg", 0.0, units="m")
+                    self.add_input(f"member{k}_{kname}:bulkhead_I_base", np.zeros(6), units="kg*m**2")
+
+                    if modopt["floating"]["members"]["outer_shape"][k] == "circular":
+                        self.add_input(f"member{k}_{kname}:outer_diameter", val=np.zeros(n_height_mem), units="m")
+                        self.add_input(f"member{k}_{kname}:Ca", val=np.zeros(n_height_mem))
+                        self.add_input(f"member{k}_{kname}:Cd", val=np.zeros(n_height_mem))
+                        self.add_output(f"platform_member{k+1}_d", val=np.zeros(n_height_mem), units="m")
+                    elif modopt["floating"]["members"]["outer_shape"][k] == "rectangular":
+                        self.add_input(f"member{k}_{kname}:side_length_a", val=np.zeros(n_height_mem), units="m")
+                        self.add_input(f"member{k}_{kname}:side_length_b", val=np.zeros(n_height_mem), units="m")
+                        self.add_input(f"member{k}_{kname}:Ca", val=np.zeros(n_height_mem))
+                        self.add_input(f"member{k}_{kname}:Cd", val=np.zeros(n_height_mem))
+                        self.add_input(f"member{k}_{kname}:Cay", val=np.zeros(n_height_mem))
+                        self.add_input(f"member{k}_{kname}:Cdy", val=np.zeros(n_height_mem))
 
             # Turbine level inputs
             self.add_discrete_input('rotor_orientation',val='upwind', desc='Rotor orientation, either upwind or downwind.')
@@ -279,10 +359,10 @@ class FASTLoadCases(ExplicitComponent):
             self.add_input('overhang',         val=0.0, units='m',     desc='Horizontal distance from tower top to hub center.')
 
             # Initial conditions
-            self.add_input('U', val=np.zeros(n_pc), units='m/s', desc='wind speeds')
-            self.add_input('Omega', val=np.zeros(n_pc), units='rpm', desc='rotation speeds to run')
-            self.add_input('pitch', val=np.zeros(n_pc), units='deg', desc='pitch angles to run')
-            self.add_input("Ct_aero", val=np.zeros(n_pc), desc="rotor aerodynamic thrust coefficient")
+            self.add_input('U_init', val=np.zeros(n_pc), units='m/s', desc='Initial wind speeds')
+            self.add_input('Omega_init', val=np.zeros(n_pc), units='rpm', desc='Initial rotation speeds')
+            self.add_input('pitch_init', val=np.zeros(n_pc), units='deg', desc='Initial pitch angles')
+            self.add_input("Ct_aero_init", val=np.zeros(n_pc), desc="Initial rotor aerodynamic thrust coefficient")
 
             # Cp-Ct-Cq surfaces
             self.add_input('Cp_aero_table', val=np.zeros((n_tsr, n_pitch, n_U)), desc='Table of aero power coefficient')
@@ -299,7 +379,6 @@ class FASTLoadCases(ExplicitComponent):
             self.add_input('V_extreme50', val=0.0, units='m/s',      desc='IEC extreme wind speed at hub height for a 50-year retunr period')
             self.add_input('V_mean_iec',  val=0.0, units='m/s',      desc='IEC mean wind for turbulence class')
             
-            self.add_input('rho',         val=0.0, units='kg/m**3',  desc='density of air')
             self.add_input('mu',          val=0.0, units='kg/(m*s)', desc='dynamic viscosity of air')
             self.add_input('speed_sound_air',  val=340.,    units='m/s',        desc='Speed of sound in air.')
             self.add_input(
@@ -391,6 +470,23 @@ class FASTLoadCases(ExplicitComponent):
             self.add_input('TMD_stiffness',    val=np.zeros(n_TMDs), units='N/m',        desc='TMD Stiffnes')
             self.add_input('TMD_damping',      val=np.zeros(n_TMDs), units='N/(m/s)',    desc='TMD Damping')
 
+        # Generic DISCON params
+        if not self.options['modeling_options']['ROSCO']['flag']:
+            # If the ROSCO flag were on, the DISCON params would have gone there
+
+            discon_dvs = self.options['opt_options']['design_variables']['control']['discon']
+            for dv in discon_dvs:
+                ivc_units = None
+                if 'units' in dv:
+                    ivc_units = dv['units']
+
+                ivc_desc = None
+                if 'description' in dv:
+                    ivc_desc = dv['description']
+
+                self.add_input(f'discon:{dv["name"]}', val=dv['start'], units=ivc_units, desc=ivc_desc)
+                
+
         # DLC options
         n_ws_aep = np.max([1,modopt['DLC_driver']['n_ws_aep']])
 
@@ -412,7 +508,16 @@ class FASTLoadCases(ExplicitComponent):
         else:
             self.FAST_runDirectory = FAST_directory_base
             self.FAST_namingOut = self.FAST_InputFile
-        self.wind_directory = os.path.join(self.FAST_runDirectory, 'wind')
+        
+        # Wind directory
+        if 'wind_directory' in OFmgmt.keys():
+            self.wind_directory = OFmgmt['wind_directory']
+            if not os.path.isabs(self.wind_directory):
+                self.wind_directory =  os.path.join(os.path.dirname(self.options['modeling_options']['fname_input_modeling']),
+                                                 OFmgmt['wind_directory'])
+        else:
+            self.wind_directory = os.path.join(self.FAST_runDirectory, 'wind')
+        
         if not os.path.exists(self.FAST_runDirectory):
             os.makedirs(self.FAST_runDirectory, exist_ok=True)
         if not os.path.exists(self.wind_directory):
@@ -457,13 +562,19 @@ class FASTLoadCases(ExplicitComponent):
         
 
         # Rotor power outputs
-        self.add_output('V_out', val=np.zeros(n_ws_aep), units='m/s', desc='wind speed vector from the OF simulations')
-        self.add_output('P_out', val=np.zeros(n_ws_aep), units='W', desc='rotor electrical power')
-        self.add_output('Cp_out', val=np.zeros(n_ws_aep), desc='rotor aero power coefficient')
-        self.add_output('Ct_out', val=np.zeros(n_ws_aep), desc='rotor aero thrust coefficient')
-        self.add_output('Omega_out', val=np.zeros(n_ws_aep), units='rpm', desc='rotation speeds to run')
-        self.add_output('pitch_out', val=np.zeros(n_ws_aep), units='deg', desc='pitch angles to run')
-        self.add_output('AEP', val=0.0, units='kW*h', desc='annual energy production reconstructed from the openfast simulations')
+        if n_ws_aep > 0:
+            self.add_output('V', val=np.zeros(n_ws_aep), units='m/s', desc='wind speed vector from the OF simulations')
+            self.add_output('P', val=np.zeros(n_ws_aep), units='W', desc='rotor electrical power')
+            self.add_output('P_std', val=np.zeros(n_ws_aep), units='W', desc='standard deviation of rotor electrical power')
+            self.add_output('Cp', val=np.zeros(n_ws_aep), desc='rotor aero power coefficient')
+            self.add_output('Ct', val=np.zeros(n_ws_aep), desc='rotor aero thrust coefficient')
+            self.add_output('Omega', val=np.zeros(n_ws_aep), units='rpm', desc='rotation speeds')
+            self.add_output('Omega_std', val=np.zeros(n_ws_aep), units='rpm', desc='standard deviation of rotation speeds')
+            self.add_output('pitch', val=np.zeros(n_ws_aep), units='deg', desc='pitch angles')
+            self.add_output('pitch_std', val=np.zeros(n_ws_aep), units='deg', desc='standard deviation of pitch angles')
+            self.add_output('Thrust', val=np.zeros(n_ws_aep), units='N', desc='rotor thrust')
+            self.add_output('Thrust_std', val=np.zeros(n_ws_aep), units='N', desc='standard deviation of rotor thrust')
+            self.add_output('AEP', val=0.0, units='kW*h', desc='annual energy production reconstructed from the openfast simulations')
 
         self.add_output('My_std',      val=0.0,            units='N*m',  desc='standard deviation of blade root flap bending moment in out-of-plane direction')
         self.add_output('flp1_std',    val=0.0,            units='deg',  desc='standard deviation of trailing-edge flap angle')
@@ -546,6 +657,8 @@ class FASTLoadCases(ExplicitComponent):
         self.add_output('damage_tower_base', val=0.0, desc="Miner's rule cumulative damage at tower base")
         self.add_output('damage_monopile_base', val=0.0, desc="Miner's rule cumulative damage at monopile base")
 
+        self.add_discrete_output('signal_periods', val = {}, desc = "Time period of signals (used with freedecay DLCs)")
+
         # Simulation output
         self.add_output('openfast_failed', val=0.0, desc="Numerical value for whether any openfast runs failed. 0 if false, 2 if true")
         
@@ -626,31 +739,39 @@ class FASTLoadCases(ExplicitComponent):
             fast_reader.execute()
             fst_vt = fast_reader.fst_vt
 
-            # Fix TwrTI: WEIS modeling options have it as a single value...
-            if not isinstance(fst_vt['AeroDyn']['TwrTI'],list):
-                fst_vt['AeroDyn']['TwrTI'] = [fst_vt['AeroDyn']['TwrTI']] * len(fst_vt['AeroDyn']['TwrElev'])
-            if not isinstance(fst_vt['AeroDyn']['TwrCb'],list):
-                fst_vt['AeroDyn']['TwrCb'] = [fst_vt['AeroDyn']['TwrCb']] * len(fst_vt['AeroDyn']['TwrElev'])
-
             # Fix AddF0: Should be a n x 1 array (list of lists):
             if fst_vt['HydroDyn']:
                 fst_vt['HydroDyn']['AddF0'] = [[F0] for F0 in fst_vt['HydroDyn']['AddF0']]
 
             if modopt['ROSCO']['flag']:
+                # This is usually populated in tune_rosco if the ROSCO flag is true
                 fst_vt['DISCON_in'] = modopt['General']['openfast_configuration']['fst_vt']['DISCON_in']
+            else:
+                # If we're not tuning ROSCO and the DVs are direct inputs to the DISCON
+                discon_dvs = self.options['opt_options']['design_variables']['control']['discon']
+                for dv in discon_dvs:
+                    fst_vt['DISCON_in'][dv['name']] = inputs[f'discon:{dv["name"]}']
 
         #  Allow user-defined OpenFAST options to override WISDEM-generated ones
         #  Re-load modeling options without defaults to learn only what needs to change, has already been validated when first loaded
         modopts_no_defaults = load_yaml(self.options['modeling_options']['fname_input_modeling'])
 
+        
         # Backwards compatibility with Level3
         if 'Level3' in modopts_no_defaults:
             if 'OpenFAST' not in modopts_no_defaults:
                 modopts_no_defaults['OpenFAST'] = {}
             modopts_no_defaults['OpenFAST'].update(modopts_no_defaults['Level3'])
 
+        # Takes modeling options and applies them to fst_vt
         fst_vt = self.load_FAST_model_opts(fst_vt,modopts_no_defaults)
 
+        # Fix TwrTI, Cb: WEIS modeling options have it as a single value...
+        if not hasattr(fst_vt['AeroDyn']['TwrTI'],'__len__'):
+            fst_vt['AeroDyn']['TwrTI'] = [fst_vt['AeroDyn']['TwrTI']] * len(fst_vt['AeroDyn']['TwrElev'])
+        if not hasattr(fst_vt['AeroDyn']['TwrCb'],'__len__'):
+            fst_vt['AeroDyn']['TwrCb'] = [fst_vt['AeroDyn']['TwrCb']] * len(fst_vt['AeroDyn']['TwrElev'])
+        
         # Apply modeling overrides for faster testing
         if modopt['General']['test_mode']:
             if 'option_names' in fst_vt['MoorDyn']:  # MoorDyn is special, and option_names is only present if 
@@ -668,6 +789,9 @@ class FASTLoadCases(ExplicitComponent):
             fst_vt['SeaState']['WaveTMax'] = 1.0
             fst_vt['SeaState']['WvDiffQTF'] = False
             fst_vt['SeaState']['WvSumQTF'] = False
+            fst_vt['SeaState']['NX'] = 2
+            fst_vt['SeaState']['NY'] = 2
+            fst_vt['SeaState']['NZ'] = 2
                 
                 
         if self.model_only == True:
@@ -677,7 +801,7 @@ class FASTLoadCases(ExplicitComponent):
             self.write_FAST(fst_vt)
         else:
             # Write OF model and run
-            case_list, case_name, dlc_generator  = self.run_FAST(inputs, discrete_inputs, fst_vt)
+            dlc_generator  = self.run_FAST(inputs, discrete_inputs, fst_vt)
 
             # Set up linear turbine model
             if modopt['OpenFAST_Linear']['flag']:
@@ -744,7 +868,7 @@ class FASTLoadCases(ExplicitComponent):
                 if modopt['OpenFAST_Linear']['simulation']['flag'] or modopt['OpenFAST_Linear']['DTQP']['flag']:
                     # Extract disturbance(s)
                     level2_disturbance = []
-                    for case in case_list:
+                    for case in self.case_list:
                         ts_file     = TurbSimFile(case[('InflowWind','FileName_BTS')])
                         ts_file.compute_rot_avg(fst_vt['ElastoDyn']['TipRad'])
                         u_h         = ts_file['rot_avg'][0,:]
@@ -800,7 +924,7 @@ class FASTLoadCases(ExplicitComponent):
                     )
 
             # Post process regardless of level
-            self.post_process(case_list, dlc_generator, inputs, discrete_inputs, outputs, discrete_outputs)
+            self.post_process(dlc_generator, inputs, discrete_inputs, outputs, discrete_outputs)
             
             # Save AEP value to linear pickle file
             if modopt['OpenFAST_Linear']['flag']:
@@ -1001,6 +1125,7 @@ class FASTLoadCases(ExplicitComponent):
         # Masses and inertias from DriveSE
         fst_vt['ElastoDyn']['HubMass']   = inputs['hub_system_mass'][0]
         fst_vt['ElastoDyn']['HubIner']   = inputs['hub_system_I'][0]
+        fst_vt['ElastoDyn']['HubIner_Teeter'] = 0. # No teetering hub in DriveSE yet
         fst_vt['ElastoDyn']['HubCM']     = inputs['hub_system_cm'][0] # k*inputs['overhang'][0] - inputs['hub_system_cm'][0], but we need to solve the circular dependency in DriveSE first
         fst_vt['ElastoDyn']['NacMass']   = inputs['above_yaw_mass'][0]
         fst_vt['ElastoDyn']['YawBrMass'] = inputs['yaw_mass'][0]
@@ -1023,10 +1148,6 @@ class FASTLoadCases(ExplicitComponent):
         fst_vt['ElastoDyn']['TowerBsHt'] = tower_base_height # Height of tower base above ground level [onshore] or MSL [offshore] (meters)
         fst_vt['ElastoDyn']['TowerHt']   = tower_top_height
 
-        # TODO: There is some confusion on PtfmRefzt
-        # DZ: based on the openfast r-tests:
-        #   if this is floating, the z ref. point is 0.  Is this the reference that platform_total_center_of_mass is relative to?
-        #   if fixed bottom, it's the tower base height.
         if modopt['flags']['floating']:
             fst_vt['ElastoDyn']['PtfmMass'] = float(inputs["platform_mass"][0])
             fst_vt['ElastoDyn']['PtfmRIner'] = float(inputs["platform_I_total"][0])
@@ -1100,10 +1221,23 @@ class FASTLoadCases(ExplicitComponent):
         fst_vt['ElastoDynTower']['TMassDen'] = inputs['mass_den']
         fst_vt['ElastoDynTower']['TwFAStif'] = inputs['foreaft_stff']
         fst_vt['ElastoDynTower']['TwSSStif'] = inputs['sideside_stff']
-        fst_vt['ElastoDynTower']['TwFAM1Sh'] = inputs['fore_aft_modes'][0, :]  / sum(inputs['fore_aft_modes'][0, :])
-        fst_vt['ElastoDynTower']['TwFAM2Sh'] = inputs['fore_aft_modes'][1, :]  / sum(inputs['fore_aft_modes'][1, :])
-        fst_vt['ElastoDynTower']['TwSSM1Sh'] = inputs['side_side_modes'][0, :] / sum(inputs['side_side_modes'][0, :])
-        fst_vt['ElastoDynTower']['TwSSM2Sh'] = inputs['side_side_modes'][1, :] / sum(inputs['side_side_modes'][1, :])
+        for fass in ['fore_aft','side_side']:
+            for idir in [0,1]:
+                if not np.any(inputs[f'{fass}_modes'][idir,:]):
+                    logger.warning(f'WARNING: {fass} tower shape coefficients are zero which will cause errors in using ElastoDyn')
+        fst_vt['ElastoDynTower']['TwFAM1Sh'] = inputs['fore_aft_modes'][0, :]  / np.sum(inputs['fore_aft_modes'][0, :])
+        fst_vt['ElastoDynTower']['TwSSM1Sh'] = inputs['side_side_modes'][0, :] / np.sum(inputs['side_side_modes'][0, :])
+        
+        # Since the 2nd tower modes are sometimes problematic, if the DOF is not enabled, let's give it a safe, dummy value that won't cause errors in ElastoDyn
+        fst_vt['ElastoDynTower']['TwFAM2Sh'] = inputs['fore_aft_modes'][1, :]  / np.sum(inputs['fore_aft_modes'][1, :])
+        if not fst_vt['ElastoDyn']['TwFADOF2']:
+            fst_vt['ElastoDynTower']['TwFAM2Sh'] = np.zeros_like(inputs['fore_aft_modes'][1, :])
+            fst_vt['ElastoDynTower']['TwFAM2Sh'][0] = 1.0
+        
+        fst_vt['ElastoDynTower']['TwSSM2Sh'] = inputs['side_side_modes'][1, :] / np.sum(inputs['side_side_modes'][1, :])
+        if not fst_vt['ElastoDyn']['TwSSDOF2']:
+            fst_vt['ElastoDynTower']['TwSSM2Sh'] = np.zeros_like(inputs['side_side_modes'][1, :])
+            fst_vt['ElastoDynTower']['TwSSM2Sh'][0] = 1.0
         
         # Calculate yaw stiffness of tower (springs in series) and use in servodyn as yaw spring constant
         k_tow_tor = inputs['tor_stff'] / np.diff(inputs['tower_z'])
@@ -1125,7 +1259,7 @@ class FASTLoadCases(ExplicitComponent):
         fst_vt['ElastoDynBlade']['BlFract']    = (inputs['r']-inputs['Rhub'])/(inputs['Rtip']-inputs['Rhub'])
         fst_vt['ElastoDynBlade']['BlFract'][0] = 0.
         fst_vt['ElastoDynBlade']['BlFract'][-1]= 1.
-        fst_vt['ElastoDynBlade']['PitchAxis']  = inputs['le_location']
+        fst_vt['ElastoDynBlade']['PitchAxis']  = inputs['le_location'] / inputs['chord']
         fst_vt['ElastoDynBlade']['StrcTwst']   = inputs['theta'] # to do: structural twist is not nessessarily (nor likely to be) the same as aero twist
         fst_vt['ElastoDynBlade']['BMassDen']   = inputs['blade:rhoA']
         fst_vt['ElastoDynBlade']['FlpStff']    = inputs['blade:EIyy']
@@ -1178,7 +1312,7 @@ class FASTLoadCases(ExplicitComponent):
         fst_vt['AeroDynBlade']['BlChord']  = inputs['chord']
         fst_vt['AeroDynBlade']['BlAFID']   = np.asarray(range(1,self.n_span+1))
 
-        # TODO: Check these additional values required for MHK, setting them to zero for now
+        # TODO: Check these additional values required for MHK applications, setting them to zero for now
         fst_vt['AeroDynBlade']['BlCb'] = np.zeros(self.n_span)
         fst_vt['AeroDynBlade']['BlCenBn'] = np.zeros(self.n_span)
         fst_vt['AeroDynBlade']['BlCenBt'] = np.zeros(self.n_span)
@@ -1193,10 +1327,10 @@ class FASTLoadCases(ExplicitComponent):
         if fst_vt['AeroDyn']['AFTabMod'] == 1:
             # If AFTabMod is the default coming form the schema, check the value from WISDEM, which might be set to 2 if more Re per airfoil are defined in the geometry yaml
             fst_vt['AeroDyn']['AFTabMod'] = modopt["WISDEM"]["RotorSE"]["AFTabMod"]
-        if self.n_tab > 1 and fst_vt['AeroDyn']['AFTabMod'] == 1:
-            fst_vt['AeroDyn']['AFTabMod'] = 3
-        elif self.n_tab > 1 and fst_vt['AeroDyn']['AFTabMod'] == 2:
-            raise Exception('OpenFAST does not support both multiple Re and multiple user defined tabs. Please remove DAC devices or Re polars')
+        #if self.n_tab > 1 and fst_vt['AeroDyn']['AFTabMod'] == 1:
+        #    fst_vt['AeroDyn']['AFTabMod'] = 3
+        #elif self.n_tab > 1 and fst_vt['AeroDyn']['AFTabMod'] == 2:
+        #    raise Exception('OpenFAST does not support both multiple Re and multiple user defined tabs. Please remove DAC devices or Re polars')
 
         for i in range(self.n_span): # No of blade radial stations
 
@@ -1207,14 +1341,17 @@ class FASTLoadCases(ExplicitComponent):
             elif fst_vt['AeroDyn']['AFTabMod'] == 2:
                 loop_index = self.n_Re
             else:
-                loop_index = self.n_tab
+                #loop_index = self.n_tab
+                print("Something about n_tab and DAC.  Should not get here")
+                breakpoint()
 
             for j in range(loop_index): # Number of tabs or Re
                 if fst_vt['AeroDyn']['AFTabMod'] == 1:
-                    unsteady = eval_unsteady(inputs['airfoils_aoa'], inputs['airfoils_cl'][i,:,0,0], inputs['airfoils_cd'][i,:,0,0], inputs['airfoils_cm'][i,:,0,0])
+                    unsteady = eval_unsteady(inputs['airfoils_aoa'], inputs['airfoils_cl'][i,:,0], inputs['airfoils_cd'][i,:,0], inputs['airfoils_cm'][i,:,0])
                 elif fst_vt['AeroDyn']['AFTabMod'] == 2:
-                    unsteady = eval_unsteady(inputs['airfoils_aoa'], inputs['airfoils_cl'][i,:,j,0], inputs['airfoils_cd'][i,:,j,0], inputs['airfoils_cm'][i,:,j,0])
+                    unsteady = eval_unsteady(inputs['airfoils_aoa'], inputs['airfoils_cl'][i,:,j], inputs['airfoils_cd'][i,:,j], inputs['airfoils_cm'][i,:,j])
                 else:
+                    # Leftover from DAC, shouldn't get here
                     unsteady = eval_unsteady(inputs['airfoils_aoa'], inputs['airfoils_cl'][i,:,0,j], inputs['airfoils_cd'][i,:,0,j], inputs['airfoils_cm'][i,:,0,j])
 
                 fst_vt['AeroDyn']['af_data'][i].append({})
@@ -1229,6 +1366,7 @@ class FASTLoadCases(ExplicitComponent):
 
                 fst_vt['AeroDyn']['af_data'][i][j]['NumTabs']   = loop_index
                 if fst_vt['AeroDyn']['AFTabMod'] == 3:
+                    # Leftover from DAC, shouldn't get here
                     fst_vt['AeroDyn']['af_data'][i][j]['UserPropProp'] = inputs['airfoils_UserProp'][i,0,j]  # unsteady['UserProp'] # added to unsteady function for variable flap controls at airfoils
                     fst_vt['AeroDyn']['af_data'][i][j]['Re']   = inputs['airfoils_Re'][0] # If AFTabMod==3 the Re is neglected, but it still must be the same across tables
                 else:
@@ -1317,189 +1455,174 @@ class FASTLoadCases(ExplicitComponent):
         if len(np.unique(self.Z_out_ED_twr)) < len(self.Z_out_ED_twr):
             raise Exception('The minimum number of tower nodes for WEIS to compute forces along the tower height is 11.')
 
-        # SubDyn inputs- monopile and floating
-        if modopt['flags']['monopile']:
-            mono_d = inputs['monopile_outer_diameter']
-            mono_t = inputs['monopile_wall_thickness']
-            mono_elev = inputs['monopile_z']
-            n_joints = len(mono_d[1:]) # Omit submerged pile
-            n_members = n_joints - 1
-            itrans = n_joints - 1
-            fst_vt['SubDyn']['JointXss'] = np.zeros( n_joints )
-            fst_vt['SubDyn']['JointYss'] = np.zeros( n_joints )
-            fst_vt['SubDyn']['JointZss'] = mono_elev[1:]
-            fst_vt['SubDyn']['NReact'] = 1
-            fst_vt['SubDyn']['RJointID'] = [1]
-            fst_vt['SubDyn']['RctTDXss'] = fst_vt['SubDyn']['RctTDYss'] = fst_vt['SubDyn']['RctTDZss'] = [1]
-            fst_vt['SubDyn']['RctRDXss'] = fst_vt['SubDyn']['RctRDYss'] = fst_vt['SubDyn']['RctRDZss'] = [1]
-            fst_vt['SubDyn']['NInterf'] = 1
-            fst_vt['SubDyn']['IJointID'] = [n_joints]
-            fst_vt['SubDyn']['MJointID1'] = np.arange( n_members, dtype=np.int_ ) + 1
-            fst_vt['SubDyn']['MJointID2'] = np.arange( n_members, dtype=np.int_ ) + 2
-            
-            # Circular cross-section properties
-            fst_vt['SubDyn']['YoungE1'] = inputs['monopile_E'][1:]
-            fst_vt['SubDyn']['ShearG1'] = inputs['monopile_G'][1:]
-            fst_vt['SubDyn']['MatDens1'] = inputs['monopile_rho'][1:]
-            fst_vt['SubDyn']['XsecD'] = util.nodal2sectional(mono_d[1:])[0] # Don't need deriv
-            fst_vt['SubDyn']['XsecT'] = mono_t[1:]
-            
-            # Find the members where the 9 channels of SubDyn should be placed
-            grid_joints_monopile = (fst_vt['SubDyn']['JointZss'] - fst_vt['SubDyn']['JointZss'][0]) / (fst_vt['SubDyn']['JointZss'][-1] - fst_vt['SubDyn']['JointZss'][0])
-            n_channels = 9
-            grid_target = np.linspace(0., 0.999999999, n_channels)
-            idx_out = [np.where(grid_i >= grid_joints_monopile)[0][-1] for grid_i in grid_target]
-            idx_out = np.unique(idx_out)
-            fst_vt['SubDyn']['NMOutputs'] = len(idx_out)
-            fst_vt['SubDyn']['MemberID_out'] = [idx+1 for idx in idx_out]
-            fst_vt['SubDyn']['NOutCnt'] = np.ones_like(fst_vt['SubDyn']['MemberID_out'])
-            fst_vt['SubDyn']['NodeCnt'] = [np.array([1]) for _ in fst_vt['SubDyn']['MemberID_out']] # Since NodeCnt can be a list of nodes defined by NOutCnt, we cant use integers here
-            fst_vt['SubDyn']['NodeCnt'][-1] = np.array([2])
-            self.Z_out_SD_mpl = [grid_joints_monopile[i] for i in idx_out]
-
-            # Add SubDyn output channels for monopile
-            for i in range(fst_vt['SubDyn']['NMOutputs']):
-                for j in fst_vt['SubDyn']['NodeCnt'][i]:
-                    fst_vt['outlist']['SubDyn'][f'M{i+1}N{j}FKxe'] = True
-                    fst_vt['outlist']['SubDyn'][f'M{i+1}N{j}FKye'] = True
-                    fst_vt['outlist']['SubDyn'][f'M{i+1}N{j}FKze'] = True
-                    fst_vt['outlist']['SubDyn'][f'M{i+1}N{j}MKxe'] = True
-                    fst_vt['outlist']['SubDyn'][f'M{i+1}N{j}MKye'] = True
-                    fst_vt['outlist']['SubDyn'][f'M{i+1}N{j}MKze'] = True
-
-        elif modopt['flags']['floating']:
-            joints_xyz = inputs["platform_nodes"]
-            n_joints = np.where(joints_xyz[:, 0] == NULL)[0][0]
-            joints_xyz = joints_xyz[:n_joints, :]
-            itrans = util.closest_node(joints_xyz, inputs["transition_node"])
-
-            N1 = np.int_(inputs["platform_elem_n1"])
-            n_members = np.where(N1 == NULL)[0][0]
-            N1 = N1[:n_members]
-            N2 = np.int_(inputs["platform_elem_n2"][:n_members])
-
-            fst_vt['SubDyn']['JointXss'] = joints_xyz[:,0]
-            fst_vt['SubDyn']['JointYss'] = joints_xyz[:,1]
-            fst_vt['SubDyn']['JointZss'] = joints_xyz[:,2]
-            fst_vt['SubDyn']['NReact'] = 0
-            fst_vt['SubDyn']['RJointID'] = []
-            fst_vt['SubDyn']['RctTDXss'] = fst_vt['SubDyn']['RctTDYss'] = fst_vt['SubDyn']['RctTDZss'] = []
-            fst_vt['SubDyn']['RctRDXss'] = fst_vt['SubDyn']['RctRDYss'] = fst_vt['SubDyn']['RctRDZss'] = []
-            if modopt['floating']['transition_joint'] is None:
-                fst_vt['SubDyn']['NInterf'] = 0
-                fst_vt['SubDyn']['IJointID'] = []
-            else:
-                fst_vt['SubDyn']['NInterf'] = 1
-                fst_vt['SubDyn']['IJointID'] = [itrans+1]
-            fst_vt['SubDyn']['MJointID1'] = N1+1
-            fst_vt['SubDyn']['MJointID2'] = N2+1
-
-            fst_vt['SubDyn']['YoungE1'] = inputs["platform_elem_E"][:n_members]
-            fst_vt['SubDyn']['ShearG1'] = inputs["platform_elem_G"][:n_members]
-            fst_vt['SubDyn']['MatDens1'] = inputs["platform_elem_rho"][:n_members]
-            fst_vt['SubDyn']['XsecD'] = inputs["platform_elem_D"][:n_members]
-            fst_vt['SubDyn']['XsecT'] = inputs["platform_elem_t"][:n_members]
-
-        # SubDyn inputs- offshore generic
-        if modopt['flags']['offshore']:
-            mgrav = 0.0 if not modopt['flags']['monopile'] else float(inputs['gravity_foundation_mass'])
-            if fst_vt['SubDyn']['SDdeltaT']<=-999.0: fst_vt['SubDyn']['SDdeltaT'] = "DEFAULT"
-            fst_vt['SubDyn']['GuyanDamp'] = np.vstack( tuple([fst_vt['SubDyn']['GuyanDamp'+str(m+1)] for m in range(6)]) )
-            fst_vt['SubDyn']['Rct_SoilFile'] = [""]*fst_vt['SubDyn']['NReact']
-            fst_vt['SubDyn']['NJoints'] = n_joints
-            fst_vt['SubDyn']['JointID'] = np.arange( n_joints, dtype=np.int_) + 1
-            fst_vt['SubDyn']['JointType'] = np.ones( n_joints, dtype=np.int_)
-            fst_vt['SubDyn']['JointDirX'] = fst_vt['SubDyn']['JointDirY'] = fst_vt['SubDyn']['JointDirZ'] = np.zeros( n_joints )
-            fst_vt['SubDyn']['JointStiff'] = np.zeros( n_joints )
-            fst_vt['SubDyn']['ItfTDXss'] = fst_vt['SubDyn']['ItfTDYss'] = fst_vt['SubDyn']['ItfTDZss'] = [1]
-            fst_vt['SubDyn']['ItfRDXss'] = fst_vt['SubDyn']['ItfRDYss'] = fst_vt['SubDyn']['ItfRDZss'] = [1]
-            fst_vt['SubDyn']['NMembers'] = n_members
-            fst_vt['SubDyn']['MemberID'] = np.arange( n_members, dtype=np.int_ ) + 1
-            fst_vt['SubDyn']['MPropSetID1'] = fst_vt['SubDyn']['MPropSetID2'] = np.arange( n_members, dtype=np.int_ ) + 1
-            fst_vt['SubDyn']['MType'] = np.ones( n_members, dtype=np.int_ )
-            fst_vt['SubDyn']['M_COSMID'] = np.ones( n_members, dtype=np.int_ ) * -1 #  TODO: verify based on https://openfast.readthedocs.io/en/dev/source/user/subdyn/input_files.html#members
-            fst_vt['SubDyn']['M_Spin'] = np.zeros( n_members, dtype=np.int_ ) #  TODO: no rotation or rectangular members supported yet, see https://openfast.readthedocs.io/en/dev/source/user/subdyn/input_files.html#members
-            
-            # Circular beam cross-section properties
-            fst_vt['SubDyn']['NBCPropSets'] = n_members
-            fst_vt['SubDyn']['PropSetID1'] = np.arange( n_members, dtype=np.int_ ) + 1
-            
-            # Rectangular beam cross-section properties (not yet supported)
-            fst_vt['SubDyn']['NBRPropSets'] = 0
-            
-            fst_vt['SubDyn']['NCablePropSets'] = 0
-            fst_vt['SubDyn']['NRigidPropSets'] = 0
-            fst_vt['SubDyn']['NSpringPropSets'] = 0
-            fst_vt['SubDyn']['NCOSMs'] = 0
-            fst_vt['SubDyn']['NXPropSets'] = 0
-            fst_vt['SubDyn']['NCmass'] = 2 if mgrav > 0.0 else 1
-            fst_vt['SubDyn']['CMJointID'] = [itrans+1]
-            fst_vt['SubDyn']['JMass'] = [float(inputs['transition_piece_mass'][0])]
-            fst_vt['SubDyn']['JMXX'] = [inputs['transition_piece_I'][0]]
-            fst_vt['SubDyn']['JMYY'] = [inputs['transition_piece_I'][1]]
-            fst_vt['SubDyn']['JMZZ'] = [inputs['transition_piece_I'][2]]
-            fst_vt['SubDyn']['JMXY'] = fst_vt['SubDyn']['JMXZ'] = fst_vt['SubDyn']['JMYZ'] = [0.0]
-            fst_vt['SubDyn']['MCGX'] = fst_vt['SubDyn']['MCGY'] = fst_vt['SubDyn']['MCGZ'] = [0.0]
-            if mgrav > 0.0:
-                fst_vt['SubDyn']['CMJointID'] += [1]
-                fst_vt['SubDyn']['JMass'] += [mgrav]
-                fst_vt['SubDyn']['JMXX'] += [inputs['gravity_foundation_I'][0]]
-                fst_vt['SubDyn']['JMYY'] += [inputs['gravity_foundation_I'][1]]
-                fst_vt['SubDyn']['JMZZ'] += [inputs['gravity_foundation_I'][2]]
-                fst_vt['SubDyn']['JMXY'] += [0.0]
-                fst_vt['SubDyn']['JMXZ'] += [0.0]
-                fst_vt['SubDyn']['JMYZ'] += [0.0]
-                fst_vt['SubDyn']['MCGX'] += [0.0]
-                fst_vt['SubDyn']['MCGY'] += [0.0]
-                fst_vt['SubDyn']['MCGZ'] += [0.0]
 
 
         # HydroDyn inputs
         if modopt['flags']['monopile']:
-            z_coarse = make_coarse_grid(mono_elev[1:], mono_d[1:])
+            mono_d = inputs['monopile_outer_diameter']
+            mono_t = inputs['monopile_wall_thickness']
+            mono_elev = inputs['monopile_z']
+            z_coarse = make_coarse_grid(mono_elev[:], mono_d[:])
             # Don't want any nodes near zero for annoying hydrodyn errors
             idx0 = np.intersect1d(np.where(z_coarse>-0.5), np.where(z_coarse<0.5))
             z_coarse = np.delete(z_coarse, idx0) 
             n_joints = len(z_coarse)
-            n_members = n_joints - 1
+            n_member_openfast = n_joints - 1
             joints_xyz = np.c_[np.zeros((n_joints,2)), z_coarse]
-            d_coarse = np.interp(z_coarse, mono_elev[1:], mono_d[1:])
+            d_coarse = np.interp(z_coarse, mono_elev[:], mono_d[:])
             t_coarse = util.sectional_interp(z_coarse, mono_elev[1:], mono_t[1:])
-            N1 = np.arange( n_members, dtype=np.int_ ) + 1
-            N2 = np.arange( n_members, dtype=np.int_ ) + 2
+            a_coarse = np.zeros_like(d_coarse) # dummy a and b
+            b_coarse = np.zeros_like(d_coarse)
+            MSecGeom = np.ones(n_member_openfast, dtype=np.int_)  # 1 for circular
+            N1 = np.arange( n_member_openfast, dtype=np.int_ ) + 1
+            N2 = np.arange( n_member_openfast, dtype=np.int_ ) + 2
+            rigid_links_xyz = np.empty((0, 3)) # No rigid links for monopile, dummy
+            n_member_floatingse = 0
+            
             
         elif modopt['flags']['floating']:
             joints_xyz = np.empty((0, 3))
             N1 = np.array([], dtype=np.int_)
             N2 = np.array([], dtype=np.int_)
+            
+
+            # Every member will have all parameters: circular members have zeros for side-lenghts and rectangular members have zeros for diameters
             d_coarse = np.array([])
             t_coarse = np.array([])
-            
+            Ca_coarse = np.array([])
+            Cd_coarse = np.array([])
+            a_coarse = np.array([])
+            b_coarse = np.array([])
+            Cay_coarse = np.array([])
+            Cdy_coarse = np.array([])
+            MSecGeom = np.array([], dtype=np.int_)  # 1 for circular, 2 for rectangular
+            E_coarse = np.array([])
+            G_coarse = np.array([])
+            rho_coarse = np.array([])
+            rigid_links_xyz = np.empty((0, 3))
+
+            # OpenFAST member indices that are circular or rectangular, to help build coefficients later
+            idx_circular_member = np.array([], dtype=np.int_) 
+            idx_rectangular_member = np.array([], dtype=np.int_) 
+            i_member_openfast = 0
+
             # Look over members and grab all nodes and internal connections
-            n_member = modopt["floating"]["members"]["n_members"]
-            for k in range(n_member):
-                s_grid = inputs[f"member{k}:s"]
-                idiam = inputs[f"member{k}:outer_diameter"]
-                s_coarse = make_coarse_grid(s_grid, idiam)
-                s_coarse = np.unique( np.minimum( np.maximum(s_coarse, inputs[f"member{k}:s_ghost1"]), inputs[f"member{k}:s_ghost2"]) )
-                id_coarse = np.interp(s_coarse, s_grid, idiam)
-                it_coarse = util.sectional_interp(s_coarse, s_grid, inputs[f"member{k}:wall_thickness"])
-                xyz0 = inputs[f"member{k}:joint1"]
-                xyz1 = inputs[f"member{k}:joint2"]
+            n_member_floatingse = modopt["floating"]["members"]["n_members"]
+
+            
+            for k in range(n_member_floatingse):
+
+                member_shape = modopt['floating']['members']['outer_shape'][k]
+
+                kname = modopt['floating']['members']['name'][k]
+                s_grid = inputs[f"member{k}_{kname}:s"]
+
+                if member_shape == 'circular':
+                    idiam = inputs[f"member{k}_{kname}:outer_diameter"]
+                    i_dim = idiam
+                elif member_shape == 'rectangular':
+                    i_a = inputs[f"member{k}_{kname}:side_length_a"]
+                    i_b = inputs[f"member{k}_{kname}:side_length_b"]
+                    i_dim = i_a
+
+
+                s_coarse = make_coarse_grid(s_grid, i_dim)
+                s_coarse = np.unique( np.minimum( np.maximum(s_coarse, inputs[f"member{k}_{kname}:s_ghost1"]), inputs[f"member{k}_{kname}:s_ghost2"]) )
+                it_coarse = util.sectional_interp(s_coarse, s_grid, inputs[f"member{k}_{kname}:wall_thickness"])
+                i_E_coarse = util.sectional_interp(s_coarse, s_grid, inputs[f"member{k}_{kname}:E"])
+                i_G_coarse = util.sectional_interp(s_coarse, s_grid, inputs[f"member{k}_{kname}:G"])
+                i_rho_coarse = util.sectional_interp(s_coarse, s_grid, inputs[f"member{k}_{kname}:rho"])
+                xyz0 = inputs[f"member{k}_{kname}:joint1"]
+                xyz1 = inputs[f"member{k}_{kname}:joint2"]
                 dxyz = xyz1 - xyz0
                 inode_xyz = np.outer(s_coarse, dxyz) + xyz0[np.newaxis, :]
                 inode_range = np.arange(inode_xyz.shape[0] - 1)
+                openfast_members_in_fse_member = inode_xyz.shape[0] - 1 # We break the floatingse members (with various diameters, etc.) into multiple OpenFAST members between each node
 
                 nk = joints_xyz.shape[0]
                 N1 = np.append(N1, nk + inode_range + 1)
                 N2 = np.append(N2, nk + inode_range + 2)
-                d_coarse = np.append(d_coarse, id_coarse)  
                 t_coarse = np.append(t_coarse, it_coarse)  
                 joints_xyz = np.append(joints_xyz, inode_xyz, axis=0)
+
+                # Shape indices (OpenFAST)
+                if member_shape == 'circular':
+                    idx_circular_member = np.append(idx_circular_member, np.arange(i_member_openfast, i_member_openfast + openfast_members_in_fse_member))
+                elif member_shape == 'rectangular':
+                    idx_rectangular_member = np.append(idx_rectangular_member, np.arange(i_member_openfast, i_member_openfast + openfast_members_in_fse_member))
+                i_member_openfast += openfast_members_in_fse_member
+
+                # Save rigid links - they are likely to be saved at the joint locations already, but saving now so we can find the indices/jointID later because they are likely on different members and only used for subDyn
+                if inputs[f"member{k}_{kname}:s_ghost1"] > 0.0:
+                    ghost1_xyz = xyz0 + dxyz * inputs[f"member{k}_{kname}:s_ghost1"]
+                    rigid_links_xyz = np.append(rigid_links_xyz, np.vstack([inputs[f"member{k}_{kname}:joint1"], ghost1_xyz]), axis=0)
+                if inputs[f"member{k}_{kname}:s_ghost2"] < s_grid[-1]:
+                    ghost2_xyz = xyz0 + dxyz * inputs[f"member{k}_{kname}:s_ghost2"]
+                    rigid_links_xyz = np.append(rigid_links_xyz, np.vstack([inputs[f"member{k}_{kname}:joint2"], ghost2_xyz]), axis=0)
+
+                # Collect member coefficients
+                # These are common for all members, so we can just append them
+                Ca_grid_mem = inputs[f"member{k}_{kname}:Ca"]
+                Cd_grid_mem = inputs[f"member{k}_{kname}:Cd"]
+                E_grid_mem = inputs[f"member{k}_{kname}:E"]
+                G_grid_mem = inputs[f"member{k}_{kname}:G"]
+                rho_grid_mem = inputs[f"member{k}_{kname}:rho"]
+
+                # There's some bug/feature in WISDEM that doesn't allow 0 Ca, Cd, this fixes that
+                zero_ind = Ca_grid_mem < 0
+                Ca_grid_mem[zero_ind] = 0
+
+                zero_ind = Cd_grid_mem < 0
+                Cd_grid_mem[zero_ind] = 0
+
+                # Interpolate Ca, Cd at coarse locations, add to list
+                i_Ca_coarse = np.interp(s_coarse, s_grid, Ca_grid_mem)
+                i_Cd_coarse = np.interp(s_coarse, s_grid, Cd_grid_mem)
+
+                Ca_coarse = np.append(Ca_coarse, i_Ca_coarse)  
+                Cd_coarse = np.append(Cd_coarse, i_Cd_coarse)  
+                
+                # Structural properties
+                E_coarse = np.append(E_coarse, i_E_coarse)
+                G_coarse = np.append(G_coarse, i_G_coarse)
+                rho_coarse = np.append(rho_coarse, i_rho_coarse)
+
+                # Start assigning member-shape dependent properties
+                if member_shape == 'circular':
+                    MSecGeom = np.append(MSecGeom, np.full_like(inode_range,1))
+                    id_coarse = np.interp(s_coarse, s_grid, idiam)
+                    d_coarse = np.append(d_coarse, id_coarse)  
+                    a_coarse = np.append(a_coarse, np.zeros_like(id_coarse))
+                    b_coarse = np.append(b_coarse, np.zeros_like(id_coarse))
+                    Cay_coarse = np.append(Cay_coarse, np.zeros_like(id_coarse))
+                    Cdy_coarse = np.append(Cdy_coarse, np.zeros_like(id_coarse))
+                elif member_shape == 'rectangular':
+                    MSecGeom = np.append(MSecGeom, np.full_like(inode_range,2))
+                    ia_coarse = np.interp(s_coarse, s_grid, i_a)
+                    ib_coarse = np.interp(s_coarse, s_grid, i_b)
+                    d_coarse = np.append(d_coarse, np.zeros_like(id_coarse))
+                    a_coarse = np.append(a_coarse, ia_coarse)
+                    b_coarse = np.append(b_coarse, ib_coarse)
+                    Cay_grid_mem = inputs[f"member{k}_{kname}:Cay"]
+                    Cdy_grid_mem = inputs[f"member{k}_{kname}:Cdy"]
+                    i_Cay_coarse = np.interp(s_coarse, s_grid, Cay_grid_mem)
+                    i_Cdy_coarse = np.interp(s_coarse, s_grid, Cdy_grid_mem)
+                    Cay_coarse = np.append(Cay_coarse, i_Cay_coarse)
+                    Cdy_coarse = np.append(Cdy_coarse, i_Cdy_coarse)
+
                 
         if modopt['flags']['offshore']:
+
+            # Get indices for circular and rectangular members
+            idx_circular = np.where(d_coarse > 0.0)[0]
+            idx_rectangular = np.where(a_coarse > 0.0)[0]
+            n_circular = len(idx_circular)
+            n_rectangular = len(idx_rectangular)
+
+
             fst_vt['SeaState']['WtrDens'] = float(inputs['rho_water'][0])
             fst_vt['SeaState']['WtrDpth'] = float(inputs['water_depth'][0])
+            fst_vt['Fst']['WtrDpth'] = float(inputs['water_depth'][0])
             fst_vt['SeaState']['MSL2SWL'] = 0.0
             fst_vt['SeaState']['WaveHs'] = float(inputs['Hsig_wave'][0])
             fst_vt['SeaState']['WaveTp'] = float(inputs['Tsig_wave'][0])
@@ -1520,17 +1643,11 @@ class FASTLoadCases(ExplicitComponent):
             fst_vt['HydroDyn']['AxCd'] = np.zeros( fst_vt['HydroDyn']['NAxCoef'] )
             fst_vt['HydroDyn']['AxCa'] = np.zeros( fst_vt['HydroDyn']['NAxCoef'] )
             fst_vt['HydroDyn']['AxCp'] = np.ones( fst_vt['HydroDyn']['NAxCoef'] )
-            # TODO: below needs verification
+            # TODO: joint coefficients below need verification (https://openfast.readthedocs.io/en/dev/source/user/hydrodyn/input_files.html#axial-coefficients)
             fst_vt['HydroDyn']['AxFDMod'] = np.zeros( fst_vt['HydroDyn']['NAxCoef'] )
             fst_vt['HydroDyn']['AxVnCOff'] = np.zeros( fst_vt['HydroDyn']['NAxCoef'] )
             fst_vt['HydroDyn']['AxFDLoFSc'] = np.ones( fst_vt['HydroDyn']['NAxCoef'] )
             # Use coarse member nodes for HydroDyn
-
-            # Simplify members if using potential model only
-            if modopt["RAFT"]["potential_model_override"] == 2:
-                joints_xyz = np.array([[0,0,0],[0,0,-1]])
-                N1 = np.array([N1[0]])
-                N2 = np.array([N2[0]])
                 
             # Tweak z-position
             idx = np.where(joints_xyz[:,2]==-fst_vt['SeaState']['WtrDpth'])[0]
@@ -1538,31 +1655,41 @@ class FASTLoadCases(ExplicitComponent):
                 joints_xyz[idx,2] += 1e-2
             # Store data
             n_joints = joints_xyz.shape[0]
-            n_members = N1.shape[0]
+            assert n_circular + n_rectangular == n_joints, "Error in member shape classification for HydroDyn."
+
+            n_member_openfast = N1.shape[0]
             ijoints = np.arange( n_joints, dtype=np.int_ ) + 1
-            imembers = np.arange( n_members, dtype=np.int_ ) + 1
+            ijoints_circular = ijoints[idx_circular]
+            ijoints_rectangular = ijoints[idx_rectangular]
+            imembers = np.arange( n_member_openfast, dtype=np.int_ ) + 1
             fst_vt['HydroDyn']['NJoints'] = n_joints
             fst_vt['HydroDyn']['JointID'] = ijoints
             fst_vt['HydroDyn']['Jointxi'] = joints_xyz[:,0]
             fst_vt['HydroDyn']['Jointyi'] = joints_xyz[:,1]
             fst_vt['HydroDyn']['Jointzi'] = joints_xyz[:,2]
             
-            # Only cylindrical member supported for now
-            fst_vt['HydroDyn']['NPropSetsCyl'] = n_joints      # each joint has a cross section
-            fst_vt['HydroDyn']['CylPropSetID'] = ijoints
-            fst_vt['HydroDyn']['CylPropD'] = d_coarse
-            fst_vt['HydroDyn']['CylPropThck'] = t_coarse
-            fst_vt['HydroDyn']['NPropSetsRec'] = 0   # placeholder for now
-            
-            fst_vt['HydroDyn']['NMembers'] = n_members
+            # Cylindrical member
+            fst_vt['HydroDyn']['NPropSetsCyl'] = n_circular      # each joint has a cross section
+            fst_vt['HydroDyn']['CylPropSetID'] = ijoints_circular
+            fst_vt['HydroDyn']['CylPropD'] = d_coarse[idx_circular]
+            fst_vt['HydroDyn']['CylPropThck'] = t_coarse[idx_circular]
+            # Rectangular member
+            fst_vt['HydroDyn']['NPropSetsRec'] = n_rectangular  # placeholder for now
+            fst_vt['HydroDyn']['RecPropSetID'] = ijoints_rectangular
+            fst_vt['HydroDyn']['RecPropA'] = a_coarse[idx_rectangular]
+            fst_vt['HydroDyn']['RecPropB'] = b_coarse[idx_rectangular]
+            fst_vt['HydroDyn']['RecPropThck'] = t_coarse[idx_rectangular]
+
+
+            fst_vt['HydroDyn']['NMembers'] = n_member_openfast
             fst_vt['HydroDyn']['MemberID'] = imembers
             fst_vt['HydroDyn']['MJointID1'] = fst_vt['HydroDyn']['MPropSetID1'] = N1
             fst_vt['HydroDyn']['MJointID2'] = fst_vt['HydroDyn']['MPropSetID2'] = N2
-            fst_vt['HydroDyn']['MSecGeom'] = np.ones( fst_vt['HydroDyn']['NMembers'], dtype=np.int_)
+            fst_vt['HydroDyn']['MSecGeom'] = MSecGeom
             fst_vt['HydroDyn']['MSpinOrient'] = np.zeros( fst_vt['HydroDyn']['NMembers'] )
             fst_vt['HydroDyn']['MDivSize'] = 0.5*np.ones( fst_vt['HydroDyn']['NMembers'] )
             fst_vt['HydroDyn']['MCoefMod'] = np.ones( fst_vt['HydroDyn']['NMembers'], dtype=np.int_)
-            fst_vt['HydroDyn']['MHstLMod'] = np.ones( fst_vt['HydroDyn']['NMembers'], dtype=np.int_)
+            fst_vt['HydroDyn']['MHstLMod'] = MSecGeom
             fst_vt['HydroDyn']['JointAxID'] = np.ones( fst_vt['HydroDyn']['NJoints'], dtype=np.int_)
             fst_vt['HydroDyn']['JointOvrlp'] = np.zeros( fst_vt['HydroDyn']['NJoints'], dtype=np.int_)
             fst_vt['HydroDyn']['NCoefDpthCyl'] = fst_vt['HydroDyn']['NCoefMembersCyl'] = 0
@@ -1570,6 +1697,58 @@ class FASTLoadCases(ExplicitComponent):
             fst_vt['HydroDyn']['NFillGroups'] = 0
             fst_vt['HydroDyn']['NMGDepths'] = 0
 
+            # Member-based coefficients
+            if modopt['flags']['floating']: # Why is this only used for floating? Not offshore as above?
+
+                fst_vt['HydroDyn']['PtfmVol0'] = [inputs['platform_displacement'][0]] 
+
+                fst_vt['HydroDyn']['MCoefMod']          = 3 * np.ones( fst_vt['HydroDyn']['NMembers'], dtype=np.int_)  # Use Member-based coefficients for all members
+                fst_vt['HydroDyn']['NCoefMembersCyl']   = len(idx_circular_member)
+                fst_vt['HydroDyn']['MemberID_HydCCyl']  = imembers[idx_circular_member]
+                fst_vt['HydroDyn']['CylMemberCd1']    = fst_vt['HydroDyn']['CylMemberCdMG1']   = Cd_coarse[N1[idx_circular_member]-1]
+                fst_vt['HydroDyn']['CylMemberCa1']    = fst_vt['HydroDyn']['CylMemberCaMG1']   = Ca_coarse[N1[idx_circular_member]-1]
+                fst_vt['HydroDyn']['CylMemberCd2']    = fst_vt['HydroDyn']['CylMemberCdMG2']   = Cd_coarse[N2[idx_circular_member]-1]
+                fst_vt['HydroDyn']['CylMemberCa2']    = fst_vt['HydroDyn']['CylMemberCaMG2']   = Ca_coarse[N2[idx_circular_member]-1]
+                fst_vt['HydroDyn']['CylMemberCb1']    = fst_vt['HydroDyn']['CylMemberCbMG1']   = np.ones(n_circular)
+                fst_vt['HydroDyn']['CylMemberCb2']    = fst_vt['HydroDyn']['CylMemberCbMG2']   = np.ones(n_circular)
+
+                # pass through Cp, Axial Coeffs later, zeros for now
+                fst_vt['HydroDyn']['CylMemberCp1']    = fst_vt['HydroDyn']['CylMemberCpMG1']   = np.zeros(n_circular)
+                fst_vt['HydroDyn']['CylMemberCp2']    = fst_vt['HydroDyn']['CylMemberCpMG2']   = np.zeros(n_circular)
+
+                fst_vt['HydroDyn']['CylMemberAxCd1']  = fst_vt['HydroDyn']['CylMemberAxCdMG1'] = np.zeros(n_circular)
+                fst_vt['HydroDyn']['CylMemberAxCa1']  = fst_vt['HydroDyn']['CylMemberAxCaMG1'] = np.zeros(n_circular)
+                fst_vt['HydroDyn']['CylMemberAxCd2']  = fst_vt['HydroDyn']['CylMemberAxCdMG2'] = np.zeros(n_circular)
+                fst_vt['HydroDyn']['CylMemberAxCa2']  = fst_vt['HydroDyn']['CylMemberAxCaMG2'] = np.zeros(n_circular)
+                fst_vt['HydroDyn']['CylMemberAxCp1']  = fst_vt['HydroDyn']['CylMemberAxCpMG1'] = np.zeros(n_circular)
+                fst_vt['HydroDyn']['CylMemberAxCp2']  = fst_vt['HydroDyn']['CylMemberAxCpMG2'] = np.zeros(n_circular)
+
+                # For rectangular members
+                fst_vt['HydroDyn']['NCoefMembersRec']   = len(idx_rectangular_member)
+                fst_vt['HydroDyn']['MemberID_HydCRec']  = imembers[idx_rectangular_member]
+                fst_vt['HydroDyn']['RecMemberCdA1']    = fst_vt['HydroDyn']['RecMemberCdAMG1']   = Cd_coarse[N1[idx_rectangular_member]-1]
+                fst_vt['HydroDyn']['RecMemberCdA2']    = fst_vt['HydroDyn']['RecMemberCdAMG2']   = Cd_coarse[N2[idx_rectangular_member]-1]
+                fst_vt['HydroDyn']['RecMemberCdB1']    = fst_vt['HydroDyn']['RecMemberCdBMG1']   = Cdy_coarse[N1[idx_rectangular_member]-1]
+                fst_vt['HydroDyn']['RecMemberCdB2']    = fst_vt['HydroDyn']['RecMemberCdBMG2']   = Cdy_coarse[N2[idx_rectangular_member]-1]
+                fst_vt['HydroDyn']['RecMemberCaA1']    = fst_vt['HydroDyn']['RecMemberCaAMG1']   = Ca_coarse[N1[idx_rectangular_member]-1]
+                fst_vt['HydroDyn']['RecMemberCaA2']    = fst_vt['HydroDyn']['RecMemberCaAMG2']   = Ca_coarse[N2[idx_rectangular_member]-1]
+                fst_vt['HydroDyn']['RecMemberCaB1']    = fst_vt['HydroDyn']['RecMemberCaBMG1']   = Cay_coarse[N1[idx_rectangular_member]-1]
+                fst_vt['HydroDyn']['RecMemberCaB2']    = fst_vt['HydroDyn']['RecMemberCaBMG2']   = Cay_coarse[N2[idx_rectangular_member]-1]
+                fst_vt['HydroDyn']['RecMemberCb1']    = fst_vt['HydroDyn']['RecMemberCbMG1']   = np.ones(n_rectangular)
+                fst_vt['HydroDyn']['RecMemberCb2']    = fst_vt['HydroDyn']['RecMemberCbMG2']   = np.ones(n_rectangular)
+
+                # pass through Cp, Axial Coeffs later, zeros for now
+                fst_vt['HydroDyn']['RecMemberCp1']    = fst_vt['HydroDyn']['RecMemberCpMG1']   = np.zeros(n_rectangular)
+                fst_vt['HydroDyn']['RecMemberCp2']    = fst_vt['HydroDyn']['RecMemberCpMG2']   = np.zeros(n_rectangular)
+                fst_vt['HydroDyn']['RecMemberAxCd1']  = fst_vt['HydroDyn']['RecMemberAxCdMG1'] = np.zeros(n_rectangular)
+                fst_vt['HydroDyn']['RecMemberAxCa1']  = fst_vt['HydroDyn']['RecMemberAxCaMG1'] = np.zeros(n_rectangular)
+                fst_vt['HydroDyn']['RecMemberAxCd2']  = fst_vt['HydroDyn']['RecMemberAxCdMG2'] = np.zeros(n_rectangular)
+                fst_vt['HydroDyn']['RecMemberAxCa2']  = fst_vt['HydroDyn']['RecMemberAxCaMG2'] = np.zeros(n_rectangular)
+                fst_vt['HydroDyn']['RecMemberAxCp1']  = fst_vt['HydroDyn']['RecMemberAxCpMG1'] = np.zeros(n_rectangular)
+                fst_vt['HydroDyn']['RecMemberAxCp2']  = fst_vt['HydroDyn']['RecMemberAxCpMG2'] = np.zeros(n_rectangular)
+
+            
+            # Simple Cylindrical and rectangular member coefficients
             if 'CylSimplCd' not in fst_vt['HydroDyn']:
                 for m in ['Cd', 'CdMG']:
                     fst_vt['HydroDyn'][f'CylSimpl{m}'] = 0.6
@@ -1586,19 +1765,43 @@ class FASTLoadCases(ExplicitComponent):
                 for m in ['AxCd', 'AxCdMG', 'AxCa', 'AxCaMG', 'AxCp', 'AxCpMG']:
                     fst_vt['HydroDyn'][f'RecSimpl{m}'] = 0.0
 
-            if modopt["RAFT"]["potential_model_override"] == 1:
+            if modopt["General"]["potential_flow_modeling"]["bem_method"] == 1:
                 # Strip theory only, no BEM
                 fst_vt['HydroDyn']['PropPot'] = [False] * fst_vt['HydroDyn']['NMembers']
                 
-            elif modopt["RAFT"]["potential_model_override"] == 2:
+            elif modopt["General"]["potential_flow_modeling"]["bem_method"] == 2:
                 # BEM only, no strip theory
                 fst_vt['HydroDyn']['PropPot'] = [True] * fst_vt['HydroDyn']['NMembers']
 
-                for m in ['Cd', 'CdMG', 'Ca', 'CaMG', 'Cp', 'CpMG', 'AxCd', 'AxCdMG', 'AxCa', 'AxCaMG', 'AxCp', 'AxCpMG', 'Cb', 'CbMG']:
+                # Zero all coefficients except drag, which cannot come from BEM
+                for m in ['Ca', 'CaMG', 'Cp', 'CpMG', 'AxCa', 'AxCaMG', 'AxCp', 'AxCpMG', 'Cb', 'CbMG']:
                     fst_vt['HydroDyn'][f'CylSimpl{m}'] = 0.0
                 
-                for m in ['CdA', 'CdB', 'CdAMG', 'CdBMG', 'CaA', 'CaB', 'CaAMG', 'CaBMG', 'Cp', 'CpMG', 'AxCd', 'AxCdMG', 'AxCa', 'AxCaMG', 'AxCp', 'AxCpMG', 'Cb', 'CbMG']:
+                for m in ['CaA', 'CaB', 'CaAMG', 'CaBMG', 'Cp', 'CpMG', 'AxCa', 'AxCaMG', 'AxCp', 'AxCpMG', 'Cb', 'CbMG']:
                     fst_vt['HydroDyn'][f'RecSimpl{m}'] = 0.0
+
+            elif modopt["General"]["potential_flow_modeling"]["bem_method"] == 3:
+                # Potential model for inviscid forces (radiation, excitation) only
+                
+                # Avoid double counting of buoyancy force in WAMIT, using OpenFAST nonlinear buoyancy, hydrostatics.  .hst file should be zeros
+                fst_vt['HydroDyn']['PtfmVol0'] = [0.0]  
+
+                # If True, the volume will be ignored.  We want OpenFAST to compute volume at each time step
+                fst_vt['HydroDyn']['PropPot'] = [False] * fst_vt['HydroDyn']['NMembers']
+
+                # Zero out all non-drag coefficients
+                for m in ['Ca', 'CaMG', 'Cp', 'CpMG', 'AxCd', 'AxCdMG', 'AxCa', 'AxCaMG', 'AxCp', 'AxCpMG', 'Cb', 'CbMG']:
+                    fst_vt['HydroDyn'][f'CylSimpl{m}'] = 0.0
+                    fst_vt['HydroDyn'][f'Member{m}1'] = fst_vt['HydroDyn'][f'Member{m}MG1'] = np.zeros(np.shape(N1))
+                    fst_vt['HydroDyn'][f'Member{m}2'] = fst_vt['HydroDyn'][f'Member{m}MG2'] = np.zeros(np.shape(N2))
+
+                for m in ['CdAMG', 'CdBMG', 'CaA', 'CaB', 'CaAMG', 'CaBMG', 'Cp', 'CpMG', 'AxCd', 'AxCdMG', 'AxCa', 'AxCaMG', 'AxCp', 'AxCpMG', 'Cb', 'CbMG']:
+                    fst_vt['HydroDyn'][f'RecSimpl{m}'] = 0.0
+                    fst_vt['HydroDyn'][f'Member{m}1'] = fst_vt['HydroDyn'][f'Member{m}MG1'] = np.zeros(np.shape(N1))
+                    fst_vt['HydroDyn'][f'Member{m}2'] = fst_vt['HydroDyn'][f'Member{m}MG2'] = np.zeros(np.shape(N2))
+
+                # Axial coefficients
+                fst_vt['HydroDyn']['AxCp'][:] = 0
                 
             else:
                 PropPotBool = [False] * fst_vt['HydroDyn']['NMembers']
@@ -1643,8 +1846,367 @@ class FASTLoadCases(ExplicitComponent):
 
                     for i_fig, fig in enumerate(fig_list):
                         fig.savefig(os.path.join(os.path.dirname(fst_vt['HydroDyn']['PotFile']),'rad_fit',f'rad_fit_{i_fig}.png'))
+
+
+        # SubDyn inputs- monopile and floating
+        if modopt['flags']['monopile']:
+
+            mono_d = inputs['monopile_outer_diameter']
+            mono_t = inputs['monopile_wall_thickness']
+            mono_elev = inputs['monopile_z']
+            n_joints = len(mono_d[1:]) # Omit submerged pile
+            n_member_openfast = n_joints - 1
+            itrans = n_joints - 1
+            fst_vt['SubDyn']['JointXss'] = np.zeros( n_joints )
+            fst_vt['SubDyn']['JointYss'] = np.zeros( n_joints )
+            fst_vt['SubDyn']['JointZss'] = mono_elev[1:]
+            fst_vt['SubDyn']['NReact'] = 1
+            fst_vt['SubDyn']['RJointID'] = [1]
+            fst_vt['SubDyn']['RctTDXss'] = fst_vt['SubDyn']['RctTDYss'] = fst_vt['SubDyn']['RctTDZss'] = [1]
+            fst_vt['SubDyn']['RctRDXss'] = fst_vt['SubDyn']['RctRDYss'] = fst_vt['SubDyn']['RctRDZss'] = [1]
+            fst_vt['SubDyn']['NInterf'] = 1
+            fst_vt['SubDyn']['IJointID'] = [n_joints]
+            fst_vt['SubDyn']['MJointID1'] = np.arange( n_member_openfast, dtype=np.int_ ) + 1
+            fst_vt['SubDyn']['MJointID2'] = np.arange( n_member_openfast, dtype=np.int_ ) + 2
+            n_properties = n_member_openfast
             
-            fst_vt['HydroDyn']['PtfmVol0'] = [float(inputs['platform_displacement'][0])] 
+            # Circular cross-section properties
+            fst_vt['SubDyn']['YoungE1'] = inputs['monopile_E'][1:]
+            fst_vt['SubDyn']['ShearG1'] = inputs['monopile_G'][1:]
+            fst_vt['SubDyn']['MatDens1'] = inputs['monopile_rho'][1:]
+            fst_vt['SubDyn']['XsecD'] = util.nodal2sectional(mono_d[1:])[0] # Don't need deriv
+            fst_vt['SubDyn']['XsecT'] = mono_t[1:]
+
+            # Find the members where the 9 channels of SubDyn should be placed
+            grid_joints_monopile = (fst_vt['SubDyn']['JointZss'] - fst_vt['SubDyn']['JointZss'][0]) / (fst_vt['SubDyn']['JointZss'][-1] - fst_vt['SubDyn']['JointZss'][0])
+            n_channels = 9
+            grid_target = np.linspace(0., 0.999999999, n_channels)
+            idx_out = [np.where(grid_i >= grid_joints_monopile)[0][-1] for grid_i in grid_target]
+            idx_out = np.unique(idx_out)
+            fst_vt['SubDyn']['NMOutputs'] = len(idx_out)
+            fst_vt['SubDyn']['MemberID_out'] = [idx+1 for idx in idx_out]
+            fst_vt['SubDyn']['NOutCnt'] = np.ones_like(fst_vt['SubDyn']['MemberID_out'])
+            fst_vt['SubDyn']['NodeCnt'] = [np.array([1]) for _ in fst_vt['SubDyn']['MemberID_out']] # Since NodeCnt can be a list of nodes defined by NOutCnt, we cant use integers here
+            fst_vt['SubDyn']['NodeCnt'][-1] = np.array([2])
+            self.Z_out_SD_mpl = [grid_joints_monopile[i] for i in idx_out]
+
+            # No rigid links or splitting members for monopile.
+
+            # Add SubDyn output channels for monopile
+            for i in range(fst_vt['SubDyn']['NMOutputs']):
+                for j in fst_vt['SubDyn']['NodeCnt'][i]:
+                    fst_vt['outlist']['SubDyn'][f'M{i+1}N{j}FKxe'] = True
+                    fst_vt['outlist']['SubDyn'][f'M{i+1}N{j}FKye'] = True
+                    fst_vt['outlist']['SubDyn'][f'M{i+1}N{j}FKze'] = True
+                    fst_vt['outlist']['SubDyn'][f'M{i+1}N{j}MKxe'] = True
+                    fst_vt['outlist']['SubDyn'][f'M{i+1}N{j}MKye'] = True
+                    fst_vt['outlist']['SubDyn'][f'M{i+1}N{j}MKze'] = True
+
+        elif modopt['flags']['floating']:
+
+            # If SubDyn is used in OpenFAST, ElastoDyn masses and inertias are set to zero
+            if fst_vt['Fst']['CompSub']:
+                fst_vt['ElastoDyn']['PtfmMass'] = 0 
+                fst_vt['ElastoDyn']['PtfmRIner'] = 0 
+                fst_vt['ElastoDyn']['PtfmPIner'] = 0 
+
+                # If the YawDOF is enabled, set the yaw inertia to a small value to avoid numerical issues
+                if fst_vt['ElastoDyn']['YawDOF']:
+                    fst_vt['ElastoDyn']['PtfmYIner'] = float(inputs["platform_I_total"][2]) * 1e-5
+                else:
+                    fst_vt['ElastoDyn']['PtfmYIner'] = 0
+
+                fst_vt['ElastoDyn']['PtfmXYIner'] = 0
+                fst_vt['ElastoDyn']['PtfmYZIner'] = 0
+                fst_vt['ElastoDyn']['PtfmXZIner'] = 0
+
+            itrans = util.closest_node(joints_xyz, inputs["transition_node"])
+
+
+            fst_vt['SubDyn']['NReact'] = 0
+            fst_vt['SubDyn']['RJointID'] = []
+            fst_vt['SubDyn']['RctTDXss'] = fst_vt['SubDyn']['RctTDYss'] = fst_vt['SubDyn']['RctTDZss'] = []
+            fst_vt['SubDyn']['RctRDXss'] = fst_vt['SubDyn']['RctRDYss'] = fst_vt['SubDyn']['RctRDZss'] = []
+            if modopt['floating']['transition_joint'] is None:
+                fst_vt['SubDyn']['NInterf'] = 0
+                fst_vt['SubDyn']['IJointID'] = []
+            else:
+                fst_vt['SubDyn']['NInterf'] = 1
+                fst_vt['SubDyn']['IJointID'] = [itrans+1]
+
+
+            # Find rigid links indices and append to the jointID
+            # Loop every two nodes (two ends of the rigid links)
+            # Also determine if any end points of the rigid links lie in the middle of another member, if so, member needs to be split
+
+            # Compute these before adding any rigid link joints and members
+            member_end_A = joints_xyz[N1-1,:]
+            member_end_B = joints_xyz[N2-1,:]
+            member_vec = member_end_B - member_end_A
+            rigid_link_N1 = np.array([],dtype=np.int_)
+            rigid_link_N2 = np.array([],dtype=np.int_)
+            # Copy these so the Hydrodyn nodes are not affected
+            # Previously the propID and jointID were the same, but now they can be different
+            propID1 = copy.deepcopy(N1) # Start with same property ID as member start node
+            propID2 = copy.deepcopy(N2) # Start with same property ID as member end node
+            sub_N1 = copy.deepcopy(N1)
+            sub_N2 = copy.deepcopy(N2)
+
+
+            for i_rigid in range(0, len(rigid_links_xyz), 2):
+
+                dist1 = np.linalg.norm(joints_xyz - rigid_links_xyz[i_rigid,:], axis=1)
+                # Find the idx if dist < 1e-6
+                j1 = np.where(dist1 < 1e-6)[0]
+                dist2 = np.linalg.norm(joints_xyz - rigid_links_xyz[i_rigid+1,:], axis=1)
+                j2 = np.where(dist2 < 1e-6)[0]
+                
+                if len(j1) == 0:
+                    joints_xyz = np.vstack((joints_xyz, rigid_links_xyz[i_rigid,:]))
+                    rigid_link_N1 = np.append(rigid_link_N1, len(joints_xyz))
+                else:
+                    rigid_link_N1 = np.append(rigid_link_N1, j1[0]+1) # Existing joint index
+
+                if len(j2) == 0:
+                    joints_xyz = np.vstack( (joints_xyz, rigid_links_xyz[i_rigid+1,:]) )
+                    rigid_link_N2 = np.append(rigid_link_N2, len(joints_xyz))  
+                else:
+                    rigid_link_N2 = np.append(rigid_link_N2, j2[0]+1)
+
+                # The splitting needs to be done after appending the rigid link joints and members because a new property set may be needed
+                if len(j1) == 0:
+
+                    rho_coarse, E_coarse, G_coarse, d_coarse, t_coarse, a_coarse, b_coarse, propID1, propID2, sub_N1, sub_N2, idx_circular_member, idx_rectangular_member = split_members(rigid_links_xyz[i_rigid,:], rigid_link_N1, member_end_A, member_vec, rho_coarse, E_coarse, G_coarse, d_coarse, t_coarse, a_coarse, b_coarse, propID1, propID2, sub_N1, sub_N2, idx_circular_member, idx_rectangular_member)
+
+                if len(j2) == 0:
+
+                    rho_coarse, E_coarse, G_coarse, d_coarse, t_coarse, a_coarse, b_coarse, propID1, propID2, sub_N1, sub_N2, idx_circular_member, idx_rectangular_member = split_members(rigid_links_xyz[i_rigid+1,:], rigid_link_N2, member_end_A, member_vec, rho_coarse, E_coarse, G_coarse, d_coarse, t_coarse, a_coarse, b_coarse, propID1, propID2, sub_N1, sub_N2, idx_circular_member, idx_rectangular_member)
+
+            idx_rigid_member = np.arange( len(rigid_link_N1), dtype=np.int_ ) + len(idx_rectangular_member) + len(idx_circular_member)
+            fst_vt['SubDyn']['JointXss'] = joints_xyz[:,0]
+            fst_vt['SubDyn']['JointYss'] = joints_xyz[:,1]
+            fst_vt['SubDyn']['JointZss'] = joints_xyz[:,2]
+
+            # Append rigid link members at the end
+            sub_N1 = np.append(sub_N1, rigid_link_N1)
+            sub_N2 = np.append(sub_N2, rigid_link_N2)
+            fst_vt['SubDyn']['MJointID1'] = sub_N1.tolist()
+            fst_vt['SubDyn']['MJointID2'] = sub_N2.tolist()
+            n_member_openfast = len(sub_N1)
+            imembers = np.arange( n_member_openfast, dtype=np.int_ ) + 1
+
+
+            # Get indices for circular and rectangular members
+            idx_circular = np.where(d_coarse > 0.0)[0]
+            idx_rectangular = np.where(a_coarse > 0.0)[0]
+
+            # Circular properties
+            fst_vt['SubDyn']['XsecD'] = d_coarse[idx_circular]
+            fst_vt['SubDyn']['XsecT'] = t_coarse[idx_circular]
+            fst_vt['SubDyn']['YoungE1'] = E_coarse[idx_circular]
+            fst_vt['SubDyn']['ShearG1'] = G_coarse[idx_circular]
+            fst_vt['SubDyn']['MatDens1'] = rho_coarse[idx_circular]
+
+            # Rectangular properties
+            fst_vt['SubDyn']['XsecSa'] = a_coarse[idx_rectangular]
+            fst_vt['SubDyn']['XsecSb'] = b_coarse[idx_rectangular]
+            fst_vt['SubDyn']['XsecT2'] = t_coarse[idx_rectangular]
+            fst_vt['SubDyn']['YoungE2'] = E_coarse[idx_rectangular]
+            fst_vt['SubDyn']['ShearG2'] = G_coarse[idx_rectangular]
+            fst_vt['SubDyn']['MatDens2'] = rho_coarse[idx_rectangular]
+
+
+        # SubDyn inputs- offshore generic
+        if modopt['flags']['offshore']:
+            # Update the member numbers
+            n_circular = len(idx_circular)
+            n_rectangular = len(idx_rectangular)
+            n_properties = n_circular + n_rectangular
+            i_properties = np.arange( n_properties, dtype=np.int_ ) + 1
+            iprop_circular = i_properties[idx_circular]
+            iprop_rectangular = i_properties[idx_rectangular]
+            iprop_rigid_link = n_properties + 1
+            
+            mgrav = 0.0 if not modopt['flags']['monopile'] else inputs['gravity_foundation_mass'][0]
+            n_joints = len(fst_vt['SubDyn']['JointXss'])
+            if fst_vt['SubDyn']['SDdeltaT']<=-999.0: fst_vt['SubDyn']['SDdeltaT'] = "DEFAULT"
+            fst_vt['SubDyn']['GuyanDamp'] = np.vstack( tuple([fst_vt['SubDyn']['GuyanDamp'+str(m+1)] for m in range(6)]) )
+            fst_vt['SubDyn']['Rct_SoilFile'] = [""]*fst_vt['SubDyn']['NReact']
+            fst_vt['SubDyn']['NJoints'] = n_joints
+            fst_vt['SubDyn']['JointID'] = (np.arange( n_joints, dtype=np.int_) + 1).tolist()
+            fst_vt['SubDyn']['JointType'] = np.ones( n_joints, dtype=np.int_).tolist()
+            fst_vt['SubDyn']['JointDirX'] = fst_vt['SubDyn']['JointDirY'] = fst_vt['SubDyn']['JointDirZ'] = np.zeros( n_joints )
+            fst_vt['SubDyn']['JointStiff'] = np.zeros( n_joints )
+            fst_vt['SubDyn']['ItfTDXss'] = fst_vt['SubDyn']['ItfTDYss'] = fst_vt['SubDyn']['ItfTDZss'] = [1]
+            fst_vt['SubDyn']['ItfRDXss'] = fst_vt['SubDyn']['ItfRDYss'] = fst_vt['SubDyn']['ItfRDZss'] = [1]
+            fst_vt['SubDyn']['NMembers'] = n_member_openfast 
+            fst_vt['SubDyn']['MemberID'] = np.arange( n_member_openfast, dtype=np.int_ ) + 1
+            mtype = np.ones( n_member_openfast, dtype=np.int_ )
+            if modopt['flags']['monopile']:
+                fst_vt['SubDyn']['MPropSetID1'] = fst_vt['SubDyn']['MPropSetID2'] = np.arange( n_member_openfast, dtype=np.int_ ) + 1
+                fst_vt['SubDyn']['PropSetID1'] = np.arange( n_member_openfast, dtype=np.int_ ) + 1
+                fst_vt['SubDyn']['NBCPropSets'] = n_member_openfast
+                fst_vt['SubDyn']['NBRPropSets'] = 0
+            else: #floating
+                fst_vt['SubDyn']['MPropSetID1'] = propID1.tolist() + (n_member_openfast - len(propID1)) * [iprop_rigid_link]    # Add rigid link property id
+                fst_vt['SubDyn']['MPropSetID2'] = propID2.tolist() + (n_member_openfast - len(propID2)) * [iprop_rigid_link]
+                mtype[idx_rectangular_member] = -1
+                mtype[idx_rigid_member] = 3
+
+                # Circular beam cross-section properties
+                fst_vt['SubDyn']['NBCPropSets'] = n_circular
+                fst_vt['SubDyn']['PropSetID1'] = iprop_circular
+
+                # Rectangular beam cross-section properties (not yet supported)
+                fst_vt['SubDyn']['NBRPropSets'] = n_rectangular
+                fst_vt['SubDyn']['PropSetID2'] = iprop_rectangular
+
+            fst_vt['SubDyn']['MType'] = mtype
+            fst_vt['SubDyn']['M_COSMID'] = np.ones( n_member_openfast, dtype=np.int_ ) * -1 #  Only used for springs: https://openfast.readthedocs.io/en/dev/source/user/subdyn/input_files.html#members
+            fst_vt['SubDyn']['M_Spin'] = np.zeros( n_member_openfast, dtype=np.int_ )  #  Rotation of rectangular members not supported yet, see https://openfast.readthedocs.io/en/dev/source/user/subdyn/input_files.html#members
+
+
+            fst_vt['SubDyn']['NCablePropSets'] = 0
+            fst_vt['SubDyn']['NRigidPropSets'] = 0
+            fst_vt['SubDyn']['NSpringPropSets'] = 0
+            fst_vt['SubDyn']['NCOSMs'] = 0
+            fst_vt['SubDyn']['NXPropSets'] = 0
+            fst_vt['SubDyn']['NCmass'] = 2 if mgrav > 0.0 else 1
+            fst_vt['SubDyn']['CMJointID'] = [itrans+1]
+            fst_vt['SubDyn']['JMass'] = [float(inputs['transition_piece_mass'][0])]
+            fst_vt['SubDyn']['JMXX'] = [inputs['transition_piece_I'][0]]
+            fst_vt['SubDyn']['JMYY'] = [inputs['transition_piece_I'][1]]
+            fst_vt['SubDyn']['JMZZ'] = [inputs['transition_piece_I'][2]]
+            fst_vt['SubDyn']['JMXY'] = fst_vt['SubDyn']['JMXZ'] = fst_vt['SubDyn']['JMYZ'] = [0.0]
+            fst_vt['SubDyn']['MCGX'] = fst_vt['SubDyn']['MCGY'] = fst_vt['SubDyn']['MCGZ'] = [0.0]
+
+            def add_concentrated_mass(mass,inertia,location,n_joints,n_member_openfast,fst_vt):
+                # Update fst_vt in place
+
+                # Make a new member from xyz0 to location
+                n_joints += 1
+                fst_vt['SubDyn']['NJoints'] = n_joints
+                fst_vt['SubDyn']['JointID'] += [n_joints]
+                fst_vt['SubDyn']['JointXss'] = np.append(fst_vt['SubDyn']['JointXss'], [location[0]])
+                fst_vt['SubDyn']['JointYss'] = np.append(fst_vt['SubDyn']['JointYss'], [location[1]])
+                fst_vt['SubDyn']['JointZss'] = np.append(fst_vt['SubDyn']['JointZss'], [location[2]])
+                fst_vt['SubDyn']['JointType'] += [1]
+
+                fst_vt['SubDyn']['JointDirX'] = np.append(fst_vt['SubDyn']['JointDirX'], [0])
+                fst_vt['SubDyn']['JointDirY'] = np.append(fst_vt['SubDyn']['JointDirY'], [0])
+                fst_vt['SubDyn']['JointDirZ'] = np.append(fst_vt['SubDyn']['JointDirZ'], [0])
+                fst_vt['SubDyn']['JointStiff'] = np.append(fst_vt['SubDyn']['JointStiff'], [0])
+
+                n_member_openfast += 1  # in case this is used after here
+                fst_vt['SubDyn']['NMembers'] = n_member_openfast
+                fst_vt['SubDyn']['MemberID'] = np.append(fst_vt['SubDyn']['MemberID'], [n_member_openfast])
+
+                ibase = util.closest_node(joints_xyz, location)
+                fst_vt['SubDyn']['MJointID1'] += [ibase+1]
+                fst_vt['SubDyn']['MJointID2'] += [n_joints]  # New joint at ballast position
+                fst_vt['SubDyn']['MPropSetID1'] += [iprop_rigid_link]    # ID of rigid link property set
+                fst_vt['SubDyn']['MPropSetID2'] += [iprop_rigid_link]    # ID of rigid link property set
+                fst_vt['SubDyn']['MType'] = np.append(fst_vt['SubDyn']['MType'], [3])  # Rigid link type
+                fst_vt['SubDyn']['M_Spin'] = np.append(fst_vt['SubDyn']['M_Spin'], [0])
+                fst_vt['SubDyn']['M_COSMID'] = np.append(fst_vt['SubDyn']['M_COSMID'], [-1])
+
+                # Finally add the concentrated mass at the ballast joint
+                fst_vt['SubDyn']['NCmass'] += 1
+                fst_vt['SubDyn']['JMass'] += [mass[0]]
+                fst_vt['SubDyn']['CMJointID'] += [n_joints]
+
+                # TODO translate intertia from base axis to cg
+                fst_vt['SubDyn']['JMXX'] += [inertia[0]]
+                fst_vt['SubDyn']['JMYY'] += [inertia[1]]
+                fst_vt['SubDyn']['JMZZ'] += [inertia[2]]
+                fst_vt['SubDyn']['JMXY'] += [0.0]
+                fst_vt['SubDyn']['JMXZ'] += [0.0]
+                fst_vt['SubDyn']['JMYZ'] += [0.0]
+                fst_vt['SubDyn']['MCGX'] += [0.0]
+                fst_vt['SubDyn']['MCGY'] += [0.0]
+                fst_vt['SubDyn']['MCGZ'] += [0.0]
+
+            # Ballast Mass as lumped mass
+            for k in range(n_member_floatingse):
+                kname = modopt['floating']['members']['name'][k]
+                z_pos = inputs[f"member{k}_{kname}:ballast_z_cg"]
+                m_ballast = inputs[f"member{k}_{kname}:ballast_mass"]
+                if m_ballast > 0.0:
+
+
+                    # Place the ballast joint z_pos along the member centerline
+                    xyz0 = inputs[f"member{k}_{kname}:joint1"]
+                    xyz1 = inputs[f"member{k}_{kname}:joint2"]
+                    dxyz = xyz1 - xyz0
+                    vector_length = np.linalg.norm(dxyz)
+                    unit_vector = dxyz / vector_length
+                    ballast_position = xyz0 + unit_vector * z_pos
+
+                    # ballast_I_base is "moment of inertia of permanent ballast relative to bottom point (xyz0)"
+                    d = ballast_position - xyz0
+                    I_ss = util.assembleI(inputs[f"member{k}_{kname}:ballast_I_base"]) - m_ballast * (np.dot(d, d) * np.identity(3) - np.outer(d, d))
+
+                    add_concentrated_mass(m_ballast, util.unassembleI(I_ss), ballast_position, n_joints, n_member_openfast, fst_vt)
+                    n_joints += 1
+                    n_member_openfast += 1 
+
+                # Do the same for variable ballast
+                variable_ballast_mass = inputs[f"member{k}_{kname}:variable_ballast_mass"]
+                variable_ballast_inertia = inputs[f"member{k}_{kname}:variable_ballast_I"]
+                variable_ballast_position = inputs[f"member{k}_{kname}:variable_ballast_cg"]
+                if variable_ballast_mass > 0.0:
+
+                    # variable_ballast_I is is relative to the global coordinate frame TODO: come back to this
+                    # d = variable_ballast_position - np.array([0.0, 0.0, 0.0])  # Concentrated mass inertia is about the CoG of the mass, according to Lu
+                    # I_ss = util.assembleI(inputs[f"member{k}_{kname}:variable_ballast_I"]) - variable_ballast_mass * (np.dot(d, d) * np.identity(3) - np.outer(d, d))
+
+                    add_concentrated_mass(variable_ballast_mass, variable_ballast_inertia, variable_ballast_position, n_joints, n_member_openfast, fst_vt)
+                    n_joints += 1
+                    n_member_openfast += 1 
+
+                # Add bulkhead masses
+                # TODO (someday): account for individual bulkheads, they are currently lumped together
+                bulkhead_mass = inputs[f"member{k}_{kname}:bulkhead_mass"]
+                bulkhead_inertia = inputs[f"member{k}_{kname}:bulkhead_I_base"]
+                bulkhead_position = inputs[f"member{k}_{kname}:bulkhead_z_cg"]
+
+                if bulkhead_mass > 0.0:
+                    # Place the bulkhead joint z_pos along the member centerline
+                    xyz0 = inputs[f"member{k}_{kname}:joint1"]
+                    xyz1 = inputs[f"member{k}_{kname}:joint2"]
+                    dxyz = xyz1 - xyz0
+                    vector_length = np.linalg.norm(dxyz)
+                    unit_vector = dxyz / vector_length
+                    bulkhead_xyz = xyz0 + unit_vector * bulkhead_position
+
+                    # bulkhead_I_base is "moment of inertia of permanent ballast relative to keel point (xyz0)"
+                    d = bulkhead_xyz - xyz0 # SubDyn concentrated mass inertia is about the CoG of the mass, according to Lu
+                    I_ss = util.assembleI(inputs[f"member{k}_{kname}:bulkhead_I_base"]) - bulkhead_mass * (np.dot(d, d) * np.identity(3) - np.outer(d, d))
+
+                    add_concentrated_mass(bulkhead_mass, bulkhead_inertia, bulkhead_xyz, n_joints, n_member_openfast, fst_vt)
+                    n_joints += 1
+                    n_member_openfast += 1 
+
+
+            # Make a weightless rigid link type for all the rigid links
+            if len(rigid_links_xyz) > 0:
+                fst_vt['SubDyn']['RigidPropSetID'] = np.array([n_rectangular + n_circular + 1])
+                fst_vt['SubDyn']['NRigidPropSets'] = 1
+                fst_vt['SubDyn']['RigidMatDens'] = np.zeros(1)
+
+
+            if mgrav > 0.0:
+                fst_vt['SubDyn']['CMJointID'] += [1]
+                fst_vt['SubDyn']['JMass'] += [mgrav]
+                fst_vt['SubDyn']['JMXX'] += [inputs['gravity_foundation_I'][0]]
+                fst_vt['SubDyn']['JMYY'] += [inputs['gravity_foundation_I'][1]]
+                fst_vt['SubDyn']['JMZZ'] += [inputs['gravity_foundation_I'][2]]
+                fst_vt['SubDyn']['JMXY'] += [0.0]
+                fst_vt['SubDyn']['JMXZ'] += [0.0]
+                fst_vt['SubDyn']['JMYZ'] += [0.0]
+                fst_vt['SubDyn']['MCGX'] += [0.0]
+                fst_vt['SubDyn']['MCGY'] += [0.0]
+                fst_vt['SubDyn']['MCGZ'] += [0.0]
 
 
         # Moordyn inputs
@@ -1676,6 +2238,7 @@ class FASTLoadCases(ExplicitComponent):
             fst_vt['MoorDyn']['NConnects'] = n_nodes
             fst_vt['MoorDyn']['Point_ID'] = np.arange(n_nodes)+1
             fst_vt['MoorDyn']['Attachment'] = mooropt["node_type"][:]
+            fst_vt['MoorDyn']['Attachment'] = [a.replace('connect','free') for a in fst_vt['MoorDyn']['Attachment']]    # MoorDyn uses 'free' for nodes connecting two lines
             fst_vt['MoorDyn']['X'] = inputs['nodes_location_full'][:,0]
             fst_vt['MoorDyn']['Y'] = inputs['nodes_location_full'][:,1]
             fst_vt['MoorDyn']['Z'] = inputs['nodes_location_full'][:,2]
@@ -1689,7 +2252,12 @@ class FASTLoadCases(ExplicitComponent):
             fst_vt['MoorDyn']['Line_ID'] = np.arange(n_lines)+1
             fst_vt['MoorDyn']['LineType'] = line_names
             fst_vt['MoorDyn']['UnstrLen'] = inputs['unstretched_length']
-            fst_vt['MoorDyn']['NumSegs'] = 50*np.ones(n_lines, dtype=np.int64)      # TODO: make this a modeling option
+            if isinstance(modopt['OpenFAST']['MoorDyn']['NumSegs'], list):
+                if len(modopt['OpenFAST']['MoorDyn']['NumSegs']) != n_lines:
+                    raise Exception(f"The NumSegs input length ({len(modopt['OpenFAST']['MoorDyn']['NumSegs'])}) does not match the number of lines defined ({n_lines})")
+                fst_vt['MoorDyn']['NumSegs'] = modopt['OpenFAST']['MoorDyn']['NumSegs']   # This may be redundant if it's a user input
+            else:
+                fst_vt['MoorDyn']['NumSegs'] = modopt['OpenFAST']['MoorDyn']['NumSegs']*np.ones(n_lines, dtype=np.int64) 
             fst_vt['MoorDyn']['AttachA'] = np.zeros(n_lines, dtype=np.int64)
             fst_vt['MoorDyn']['AttachB'] = np.zeros(n_lines, dtype=np.int64)
             fst_vt['MoorDyn']['Outputs'] = ['-'] * n_lines
@@ -1698,19 +2266,15 @@ class FASTLoadCases(ExplicitComponent):
             for k in range(n_lines):
                 id1 = discrete_inputs['node_names'].index( mooropt["node1"][k] )
                 id2 = discrete_inputs['node_names'].index( mooropt["node2"][k] )
-                if (fst_vt['MoorDyn']['Attachment'][id1].lower() == 'vessel' and
-                    fst_vt['MoorDyn']['Attachment'][id2].lower().find('fix') >= 0):
-                    fst_vt['MoorDyn']['AttachB'][k] = id1+1
-                    fst_vt['MoorDyn']['AttachA'][k] = id2+1
-                elif (fst_vt['MoorDyn']['Attachment'][id2].lower() == 'vessel' and
-                    fst_vt['MoorDyn']['Attachment'][id1].lower().find('fix') >= 0):
+
+                # Moordyn likes to have its AttachA below AttachB
+                if fst_vt['MoorDyn']['Z'][id1] < fst_vt['MoorDyn']['Z'][id2]:
                     fst_vt['MoorDyn']['AttachB'][k] = id2+1
                     fst_vt['MoorDyn']['AttachA'][k] = id1+1
+
                 else:
-                    logger.warning(discrete_inputs['node_names'])
-                    logger.warning(mooropt["node1"][k], mooropt["node2"][k])
-                    logger.warning(fst_vt['MoorDyn']['Attachment'][id1], fst_vt['MoorDyn']['Attachment'][id2])
-                    raise ValueError('Mooring line seems to be between unknown endpoint types.')
+                    fst_vt['MoorDyn']['AttachB'][k] = id1+1
+                    fst_vt['MoorDyn']['AttachA'][k] = id2+1
 
             # MoorDyn Control - Optional
             fst_vt['MoorDyn']['ChannelID'] = []
@@ -1830,7 +2394,6 @@ class FASTLoadCases(ExplicitComponent):
         modopt = self.options['modeling_options']
 
         # Mandatory output channels to include
-        # TODO: what else is needed here?
         channels_out  = ["TipDxc1", "TipDyc1", "TipDzc1", "TipDxc2", "TipDyc2", "TipDzc2"]
         channels_out += ["RootMxc1", "RootMyc1", "RootMzc1", "RootMxc2", "RootMyc2", "RootMzc2"]
         channels_out += ["TipDxb1", "TipDyb1", "TipDzb1", "TipDxb2", "TipDyb2", "TipDzb2"]
@@ -1903,6 +2466,8 @@ class FASTLoadCases(ExplicitComponent):
         # Floating output channels
         if modopt['flags']['floating']:
             channels_out += ["PtfmPitch", "PtfmRoll", "PtfmYaw", "PtfmSurge", "PtfmSway", "PtfmHeave"]
+            for i_line in range(modopt['mooring']['n_lines']):
+                channels_out += [f"AnchTen{i_line+1}", f"FairTen{i_line+1}"]
 
         # Structural Control Channels
         if modopt['flags']['TMDs']:
@@ -1965,11 +2530,11 @@ class FASTLoadCases(ExplicitComponent):
                 rot_speed_interp = np.ones_like(U_interp) * 5. # fixed initial omega at 5 rpm
                 Ct_aero_interp = np.ones_like(U_interp) * 0.7 # fixed initial ct at 0.7
         else:
-            U_interp = inputs['U']
-            pitch_interp = inputs['pitch']
-            rot_speed_interp = inputs['Omega']
-            Ct_aero_interp = inputs['Ct_aero']
-        
+            U_interp = inputs['U_init']
+            pitch_interp = inputs['pitch_init']
+            rot_speed_interp = inputs['Omega_init']
+            Ct_aero_interp = inputs['Ct_aero_init']
+
         tau1_const_interp = np.zeros_like(Ct_aero_interp)
         for i in range(len(Ct_aero_interp)):
             a = 1. / 2. * (1. - np.sqrt(1. - np.min([Ct_aero_interp[i],1])))    # don't allow Ct_aero > 1
@@ -1981,8 +2546,11 @@ class FASTLoadCases(ExplicitComponent):
         initial_condition_table['rot_speed_initial'] = rot_speed_interp
         initial_condition_table['Ct_aero'] = Ct_aero_interp
         initial_condition_table['tau1_const'] = tau1_const_interp
-        
-        
+        # Estimate initial tower top displacement from rotor thrust. 
+        # Assume that at rated thrust tower top deflection is 4% of hub height
+        thrust = 0.5 * np.array(Ct_aero_interp) * inputs['Rtip'][0]**2 * np.pi * inputs['rho'][0] * np.array(U_interp)**2
+        initial_condition_table['TTFAdisp_initial'] = thrust / np.max(thrust) * hub_height * 0.03
+
         dlc_generator = DLCGenerator(
             cut_in, 
             cut_out, 
@@ -2015,6 +2583,7 @@ class FASTLoadCases(ExplicitComponent):
                 if dlc_generator.cases[i_case].IECturbc > 0:    # use custom TI for DLC case
                     dlc_generator.cases[i_case].IECturbc = str(dlc_generator.cases[i_case].IECturbc)
                     dlc_generator.cases[i_case].IEC_WindType = 'NTM'        # must use NTM for custom TI
+                    dlc_generator.cases[i_case].ScaleIEC = 1   # Ensures that the specified TI is used
                 else:
                     dlc_generator.cases[i_case].IECturbc = wt_class
                 # Reference height for wind speed
@@ -2034,7 +2603,7 @@ class FASTLoadCases(ExplicitComponent):
                 if dlc_generator.cases[i_case].PLExp < 0:    # use PLExp based on environment options (shear_exp), otherwise use custom DLC PLExp
                     dlc_generator.cases[i_case].PLExp = PLExp
                 # Length of wind grids
-                dlc_generator.cases[i_case].AnalysisTime = dlc_generator.cases[i_case].total_time
+                dlc_generator.cases[i_case].AnalysisTime = dlc_generator.cases[i_case].analysis_time    # If UsableTime = All, TurbSim output will be periodic, and any AnalysisTime period of TurbSim input will have correct mean/TI
 
         # Generate wind files
         if MPI and not self.options['opt_options']['driver']['design_of_experiments']['flag']:
@@ -2068,27 +2637,129 @@ class FASTLoadCases(ExplicitComponent):
         # Apply olaf settings, should be similar to above?
         if dlc_generator.default_options['wake_mod'] == 3:  # OLAF is used 
             apply_olaf_parameters(dlc_generator,fst_vt)
+
+        # Add initial substructure StC
+        dlc_labels = [case.label for case in dlc_generator.cases]
+        if 'force_excursion' in dlc_labels:
+            StC_init = default_StC_vt()
+            # fst_vt['SStC'].append(StC_i)
+
+        for i_case, case_inputs in enumerate(dlc_generator.openfast_case_inputs):
+            StC_files = []
+            stc_writer = InputWriter_OpenFAST()
+            stc_writer.FAST_runDirectory = self.FAST_runDirectory
+
+            if ('SStC', 'StaticLoad') in case_inputs:
+
+                # Write Load input
+                for i_load, load_val in enumerate(case_inputs[('SStC', 'StaticLoad')]['vals']):
+                    force_filename = os.path.join(self.FAST_runDirectory,f"static_load_{i_case}_{i_load}.dat")
+                    with open(force_filename, 'w') as f:
+                        write_load = copy.deepcopy(load_val)
+                        write_load.insert(0,0)   # add time index
+                        f.write(' '.join(map(str, write_load)) + '\n')
+
+                    StC_i = default_StC_vt()
+                    StC_i['StC_DOF_MODE'] = 4
+                    StC_i['PrescribedForcesFile'] = force_filename
+                    StC_i['PrescribedForcesCoord'] = 1
+                    StC_filename = os.path.join(self.FAST_runDirectory,f"StC_{i_case}_{i_load}.dat")
+                    StC_files.append(StC_filename)
+
+                    # Write StC Input, add filename to case_inputs
+
+                    stc_writer.write_StC(StC_i,StC_filename)
+
+                    # Add StC file to case_inputs
+                    case_inputs[('ServoDyn', 'NumSStC')] = {}
+                    case_inputs[('ServoDyn', 'NumSStC')]['group'] = 0
+                    case_inputs[('ServoDyn', 'NumSStC')]['vals'] = [1]
+
+                    case_inputs[('ServoDyn', 'SStCfiles')] = {}
+                    case_inputs[('ServoDyn', 'SStCfiles')]['group'] = 2
+                    case_inputs[('ServoDyn', 'SStCfiles')]['vals'] = StC_files
+            
+                # move to CaseInfo so we can use case_matrix to see load applied
+                case_inputs[('CaseInfo', 'StaticLoad')] = case_inputs.pop(('SStC', 'StaticLoad'), None) 
+
+
+            elif ('SStC', 'StepLoad') in case_inputs:
+                # Construct step input matrix
+                # Time step for the load application
+                dt = 0.05
+                # Create time vector from 0 to TMax with step dt
+                time = np.arange(0, case_inputs[('Fst', 'TMax')]['vals'][0] + dt, dt).reshape(-1,1)
+                # Repeat steady load for each time step
+                steady_load = np.tile(case_inputs[('SStC', 'SteadyLoad')]['vals'][0], (time.size, 1))
+                # Repeat step load for each time step
+                step_load = np.tile(case_inputs[('SStC', 'StepLoad')]['vals'][0], (time.size, 1))
+                # Get start and end times for the step load
+                start = case_inputs[('SStC', 'StepStart')]['vals'][0]
+                end = case_inputs[('SStC', 'StepEnd')]['vals'][0]
+                # Create boolean mask for time indices where step load is active
+                ind = np.tile(np.bitwise_and(time >= start, time <= end), (1, step_load.shape[1]))
+                # Set step load to zero outside the active interval
+                step_load[~ind] = 0
+                # Combine time, steady load, and step load into full matrix for StC timeseries input
+                full_matrix = np.c_[time, steady_load + step_load]
+
+                step_filename = os.path.join(self.FAST_runDirectory,f"step_load_{i_case}.dat")
+                with open(step_filename, 'w') as f:
+                    np.savetxt(f, full_matrix)
+
+                StC_i = default_StC_vt()
+                StC_i['StC_DOF_MODE'] = 4
+                StC_i['PrescribedForcesFile'] = step_filename
+                StC_i['PrescribedForcesCoord'] = 1
+                StC_filename = os.path.join(self.FAST_runDirectory,f"StC_{i_case}.dat")
+                StC_files.append(StC_filename)
+                stc_writer.write_StC(StC_i,StC_filename)
+
+                # Add StC file to case_inputs
+                case_inputs[('ServoDyn', 'NumSStC')] = {}
+                case_inputs[('ServoDyn', 'NumSStC')]['group'] = 0
+                case_inputs[('ServoDyn', 'NumSStC')]['vals'] = [1]
+
+                case_inputs[('ServoDyn', 'SStCfiles')] = {}
+                case_inputs[('ServoDyn', 'SStCfiles')]['group'] = 2
+                case_inputs[('ServoDyn', 'SStCfiles')]['vals'] = [StC_files]
+        
+                # move to ServoDyn so we can use case_matrix to see load applied
+                case_inputs[('ServoDyn', 'SteadyLoad')] = case_inputs.pop(('SStC', 'SteadyLoad'), None) 
+                case_inputs[('ServoDyn', 'StepLoad')]   = case_inputs.pop(('SStC', 'StepLoad'), None) 
+                case_inputs[('ServoDyn', 'StepStart')]  = case_inputs.pop(('SStC', 'StepStart'), None) 
+                case_inputs[('ServoDyn', 'StepEnd')]    = case_inputs.pop(('SStC', 'StepEnd'), None) 
                     
         # Parameteric inputs
-        case_name = []
-        case_list = []
+        self.case_name = []
+        self.case_list = []
         for i_case, case_inputs in enumerate(dlc_generator.openfast_case_inputs):
             # Generate case list for DLC i
             dlc_label = DLCs[i_case]['DLC']
             case_list_i, case_name_i = CaseGen_General(case_inputs, self.FAST_runDirectory, self.FAST_InputFile, filename_ext=f'_DLC{dlc_label}_{i_case}')
             # Add DLC to case names
-            case_name_i = [f'DLC{dlc_label}_{i_case}_{cni}' for cni in case_name_i]   # TODO: discuss case labeling with stakeholders
+            case_name_i = [f'DLC{dlc_label}_{i_case}_{cni}' for cni in case_name_i]
             
+
+            # Convert StaticLoad back to float aray
+            for case_i in case_list_i:
+                if ('CaseInfo', 'StaticLoad') in case_i:
+                    case_i[('CaseInfo', 'StaticLoad')] = [float(load) for load in case_i[('CaseInfo', 'StaticLoad')]]
+                    case_i[('ServoDyn', 'SStCfiles')] = [case_i[('ServoDyn', 'SStCfiles')]]
+            
+
+
             # Extend lists of cases
-            case_list.extend(case_list_i)
-            case_name.extend(case_name_i)
+            self.case_list.extend(case_list_i)
+            self.case_name.extend(case_name_i)
 
         # Apply wind files to case_list (this info will be in combined case matrix, but not individual DLCs)
-        for case_i, wt, wa, wf in zip(case_list,WindFile_type,WindFile_plexp,WindFile_name):
-            case_i[('InflowWind','WindType')] = wt
-            case_i[('InflowWind','PLExp')] = wa
-            case_i[('InflowWind','FileName_Uni')] = wf
-            case_i[('InflowWind','FileName_BTS')] = wf
+        for i_case, case_i in enumerate(self.case_list):  # i_case is index, case_i is case dictionary
+            case_i[('InflowWind','WindType')] = WindFile_type[i_case]
+            case_i[('InflowWind','PLExp')] = WindFile_plexp[i_case]
+            case_i[('InflowWind','FileName_Uni')] = WindFile_name[i_case]
+            case_i[('InflowWind','FileName_BTS')] = WindFile_name[i_case]
+            case_i[('TurbSim', 'IECTurbc')] = dlc_generator.cases[i_case].IECturbc
 
         # Save some case info
         self.TMax = [c.total_time for c in dlc_generator.cases]
@@ -2097,11 +2768,11 @@ class FASTLoadCases(ExplicitComponent):
 
 
         # Merge various cases into single case matrix
-        case_df = pd.DataFrame(case_list)
-        case_df.index = case_name
+        case_df = pd.DataFrame(self.case_list)
+        case_df.index = self.case_name
         # Add case name and dlc label to front for readability
         case_df.insert(0,'DLC',dlc_label)
-        case_df.insert(0,'case_name',case_name)
+        case_df.insert(0,'case_name',self.case_name)
         text_table = case_df.to_string(index=False)
 
         # Write the text table to a yaml, text file
@@ -2113,9 +2784,9 @@ class FASTLoadCases(ExplicitComponent):
         channels= self.output_channels(fst_vt)
 
         # Delete the extra case_inputs because they don't play nicely with aeroelasticse
-        for case in case_list:
+        for case in self.case_list:
             for key in list(case):
-                if key[0] in ['DLC','TurbSim']:
+                if key[0] in ['DLC','TurbSim','CaseInfo']:
                     del case[key]
         
         
@@ -2140,8 +2811,8 @@ class FASTLoadCases(ExplicitComponent):
         else:
             fastBatch                           = fastwrap.runFAST_pywrapper_batch()
             fastBatch.FAST_runDirectory         = self.FAST_runDirectory
-            fastBatch.case_list                 = case_list
-            fastBatch.case_name_list            = case_name     
+            fastBatch.case_list                 = self.case_list
+            fastBatch.case_name_list            = self.case_name     
             fastBatch.use_exe                   = modopt['General']['openfast_configuration']['use_exe']
         
         fastBatch.channels          = channels
@@ -2157,7 +2828,15 @@ class FASTLoadCases(ExplicitComponent):
         if self.FAST_lib_user is not None:
             fastBatch.FAST_lib      = self.FAST_lib_user
 
-        fastBatch.overwrite_outfiles = True  #<--- Debugging only, set to False to prevent OpenFAST from running if the .outb already exists
+        fastBatch.overwrite_outfiles = modopt['General']['openfast_configuration']['overwrite_outputs']
+
+        if not fastBatch.overwrite_outfiles:
+            # Check that existing case_matrix matches current case matrix
+            existing_case_matrix_file = os.path.join(self.FAST_runDirectory,'case_matrix_combined.yaml')
+            if os.path.isfile(existing_case_matrix_file):
+                existing_case_df = load_yaml(existing_case_matrix_file)
+                if not existing_case_df == case_df.to_dict():
+                    raise Exception("FAST run directory case matrix does not match current case matrix and overwrite_outputs is set to false. Different cases will be run.")
 
         # Initialize fatigue channels and setings
         # TODO: Stress Concentration Factor?
@@ -2217,6 +2896,7 @@ class FASTLoadCases(ExplicitComponent):
             lss_fatigue = FatigueParams(load2stress=1.0,
                                         dnv_name='B1',
                                         dnv_type='air',
+                                        units='kPa',
                                         ultimate_stress=1e-3*inputs['lss_ultstress'],
                                         S_intercept=1e-3*inputs['lss_wohlerA'])
             for s in ['Ax','Sh']:
@@ -2242,6 +2922,7 @@ class FASTLoadCases(ExplicitComponent):
             tower_fatigue_base = FatigueParams(load2stress=1.0,
                                                dnv_name='D',
                                                dnv_type='air',
+                                               units='kPa',
                                                ultimate_stress=1e-3*inputs['tower_ultstress'][0],
                                                S_intercept=1e-3*inputs['tower_wohlerA'][0])
             for s in ['Ax','Sh']:
@@ -2261,6 +2942,7 @@ class FASTLoadCases(ExplicitComponent):
                 monopile_fatigue_base = FatigueParams(load2stress=1.0,
                                                       dnv_name='D',
                                                       dnv_type='sea',
+                                                      units='Pa',
                                                       ultimate_stress=inputs['monopile_ultstress'][0],
                                                       S_intercept=inputs['monopile_wohlerA'][0])
                 for s in ['Ax','Sh']:
@@ -2272,6 +2954,19 @@ class FASTLoadCases(ExplicitComponent):
                             monopile_fatigue_ii.load2stress = inputs[f'monopile_{sstr}_load2stress'][0,idx]
                             fatigue_channels[f'M1N1{s}{k}K{x}e'] = monopile_fatigue_ii
                             magnitude_channels[f'M1N1{s}{k}K{x}e'] = [f'M1N1{k}K{x}e'] if x=='z' else [f'M1N1{k}Kxe', f'M1N1{k}Kye']
+
+            # Fatigue of mooring lines
+            if modopt['flags']['mooring']:
+                mooring_fatigue = FatigueParams(
+                    slope = 3,      # For chain
+                    load2stress=1.0,      # Placeholder
+                    ultimate_stress=1e6,  # Placeholder
+                    S_intercept=1.2e11    # Chain value
+                    )
+                for i_line in range(modopt['mooring']['n_lines']):
+                    fatigue_channels[f'ANCHTEN{i_line+1}'] = mooring_fatigue
+                    fatigue_channels[f'FAIRTEN{i_line+1}'] = mooring_fatigue
+
 
         # Store settings
         fastBatch.goodman            = modopt['General']['goodman_correction'] # Where does this get placed in schema?
@@ -2291,31 +2986,34 @@ class FASTLoadCases(ExplicitComponent):
         self.of_inumber = self.of_inumber + 1
         sys.stdout.flush()
 
-        return case_list, case_name, dlc_generator
+        return dlc_generator
 
-    def post_process(self, case_list, dlc_generator, inputs, discrete_inputs, outputs, discrete_outputs):
+    def post_process(self, dlc_generator, inputs, discrete_inputs, outputs, discrete_outputs):
         modopt = self.options['modeling_options']
 
         # Analysis
-        if self.options['modeling_options']['flags']['blade'] and bool(self.fst_vt['Fst']['CompAero']):
-            outputs = self.get_blade_loading(inputs, outputs)
+        comp_aero = any([cl[('Fst', 'CompAero')] for cl in self.case_list if ('Fst','CompAero') in cl]) or bool(self.fst_vt['Fst']['CompAero'])   # do any sims have required AeroDyn channels?
+        if self.options['modeling_options']['flags']['blade'] and comp_aero:
+            self.get_blade_loading(inputs, outputs)
             
         if self.options['modeling_options']['flags']['tower']:
-            outputs = self.get_tower_loading(inputs, outputs)
+            self.get_tower_loading(inputs, outputs)
             
         # SubDyn is only supported in Level3: linearization in OpenFAST will be available in 3.0.0
         if modopt['flags']['monopile']:
-            outputs = self.get_monopile_loading(inputs, outputs)
+            self.get_monopile_loading(inputs, outputs)
 
         # If DLC 1.1 not used, calculate_AEP will just compute average power of simulations
-        outputs = self.calculate_AEP(case_list, dlc_generator, discrete_inputs, outputs)
+        self.calculate_AEP(dlc_generator, discrete_inputs, outputs)
 
-        outputs = self.get_weighted_DELs(dlc_generator, inputs, discrete_inputs, outputs)
+        self.get_weighted_DELs(dlc_generator, inputs, discrete_inputs, outputs)
         
-        outputs = self.get_control_measures(inputs, outputs)
+        self.get_control_measures(inputs, outputs)
+
+        self.get_signalperiods( outputs, discrete_outputs)
 
         if modopt['flags']['floating'] or (modopt['OpenFAST']['from_openfast'] and self.fst_vt['Fst']['CompMooring']>0):
-            outputs = self.get_floating_measures(inputs, outputs)
+            self.get_floating_measures(inputs, outputs)
 
         # Did any OpenFAST runs fail?
         if modopt['OpenFAST']['flag']:
@@ -2335,7 +3033,7 @@ class FASTLoadCases(ExplicitComponent):
 
         # Open loop to closed loop error, move this to before save_timeseries when finished
         if modopt['OL2CL']['flag']:
-            outputs = self.get_OL2CL_error(outputs)
+            self.get_OL2CL_error(outputs)
 
     def get_blade_loading(self, inputs, outputs):
         """
@@ -2456,7 +3154,6 @@ class FASTLoadCases(ExplicitComponent):
         outputs['std_aoa']  = spline_aoa_std(r)
         outputs['mean_aoa'] = spline_aoa_mean(r)
 
-        return outputs
 
     def get_tower_loading(self, inputs, outputs):
         """
@@ -2510,7 +3207,6 @@ class FASTLoadCases(ExplicitComponent):
         outputs['tower_maxMy_My'] = spline_My(z)
         outputs['tower_maxMy_Mz'] = spline_Mz(z)
         
-        return outputs
 
     def get_monopile_loading(self, inputs, outputs):
         """
@@ -2576,9 +3272,8 @@ class FASTLoadCases(ExplicitComponent):
         outputs['monopile_maxMy_My'] = 1e-3*spline_My(z)
         outputs['monopile_maxMy_Mz'] = 1e-3*spline_Mz(z)
 
-        return outputs
 
-    def calculate_AEP(self, case_list, dlc_generator, discrete_inputs, outputs):
+    def calculate_AEP(self, dlc_generator, discrete_inputs, outputs):
         """
         Calculates annual energy production of the relevant DLCs in `case_list`.
 
@@ -2601,6 +3296,14 @@ class FASTLoadCases(ExplicitComponent):
             DLC_label_for_AEP = '1.1'
             logger.warning('WARNING: DLC 1.1 is being used for AEP calculations.  Use the AEP DLC for more accurate wind modeling with constant TI.')
 
+        modopts = self.options['modeling_options']
+        DLCs = [i_dlc['DLC'] for i_dlc in modopts['DLC_driver']['DLCs']]
+        if 'AEP' in DLCs:
+            DLC_label_for_AEP = 'AEP'
+        else:
+            DLC_label_for_AEP = '1.1'
+            logger.warning('WARNING: DLC 1.1 is being used for AEP calculations.  Use the AEP DLC for more accurate wind modeling with constant TI.')
+
         idx_pwrcrv = []
         U = []
         for i_case in range(dlc_generator.n_cases):
@@ -2614,31 +3317,43 @@ class FASTLoadCases(ExplicitComponent):
         # Skip if we're not running with aerodynamics or controls/generator
         if not self.fst_vt['Fst']['CompAero'] or not self.fst_vt['Fst']['CompServo']:
             return outputs
-            
-        AEP, _ = self.cruncher.compute_aep("GenPwr", idx=idx_pwrcrv)
-        outputs['AEP'] = AEP
 
-        if len(idx_pwrcrv) > 0:
-            sum_stats = sum_stats.iloc[idx_pwrcrv]
-            outputs['V_out'] = np.unique(U)
-            prob = self.cruncher.prob[idx_pwrcrv]
-        else:
-            outputs['V_out'] = dlc_generator.cases[0].URef
-            prob = self.cruncher.prob
-            logger.warning('WARNING: OpenFAST is not run using DLC AEP, 1.1, or 1.2. AEP cannot be estimated well. Using average power instead.')
+        if self.n_ws_aep > 0:
+            AEP, _ = self.cruncher.compute_aep("GenPwr", idx=idx_pwrcrv)
+            outputs['AEP'] = AEP
 
-        if len(U) == 1:
-            logger.warning('WARNING: OpenFAST is run at a single wind speed. AEP cannot be estimated. Using average power instead.')
-            
-        # Calculate AEP and Performance Data
-        outputs['Cp_out'] = np.sum(prob * sum_stats['RtFldCp']['mean'])
-        outputs['Ct_out'] = np.sum(prob * sum_stats['RtFldCt']['mean'])
-        outputs['Omega_out'] = np.sum(prob * sum_stats['RotSpeed']['mean'])
-        outputs['pitch_out'] = np.sum(prob * sum_stats['BldPitch1']['mean'])
-        if self.fst_vt['Fst']['CompServo'] == 1:
-            outputs['P_out'] = np.sum(prob * sum_stats['GenPwr']['mean']) * 1e3
+            n_seeds_AEP = 0
+            if len(idx_pwrcrv) > 0:
+                sum_stats = sum_stats.iloc[idx_pwrcrv]
+                outputs['V'] = np.unique(U)
+                n_seeds_AEP = int(len(U) / len(np.unique(U)))
+            else:
+                outputs['V'] = dlc_generator.cases[0].URef
+                logger.warning('WARNING: OpenFAST is not run using DLC AEP, 1.1, or 1.2. AEP cannot be estimated well. Using average power instead.')
 
-        return outputs
+            if len(U) == 1:
+                logger.warning('WARNING: OpenFAST is run at a single wind speed. AEP cannot be estimated. Using average power instead.')
+                
+            # Calculate AEP and Performance Data
+            # Average across turbulent seeds for each wind speed
+            def avg_seeds(vec):
+                vec = np.asarray(vec)
+                if n_seeds_AEP > 1:
+                    return np.array([(vec[i] + vec[i+1]) / n_seeds_AEP for i in range(0, len(vec), n_seeds_AEP)])
+                else:
+                    return vec
+            outputs['Cp'] = avg_seeds(sum_stats['RtFldCp']['mean'])
+            outputs['Ct'] = avg_seeds(sum_stats['RtFldCt']['mean'])
+            outputs['Omega'] = avg_seeds(sum_stats['RotSpeed']['mean'])
+            outputs['Omega_std'] = avg_seeds(sum_stats['RotSpeed']['std'])
+            outputs['pitch'] = avg_seeds(sum_stats['BldPitch1']['mean'])
+            outputs['pitch_std'] = avg_seeds(sum_stats['BldPitch1']['std'])
+            outputs['Thrust'] = avg_seeds(sum_stats['RotThrust']['mean'])
+            outputs['Thrust_std'] = avg_seeds(sum_stats['RotThrust']['std'])
+            if self.fst_vt['Fst']['CompServo'] == 1:
+                outputs['P'] = avg_seeds(sum_stats['GenPwr']['mean'])
+                outputs['P_std'] = avg_seeds(sum_stats['GenPwr']['std'])
+
 
     def get_weighted_DELs(self, dlc_generator, inputs, discrete_inputs, outputs):
         modopt = self.options['modeling_options']
@@ -2720,7 +3435,6 @@ class FASTLoadCases(ExplicitComponent):
             if self.options['opt_options']['constraints']['damage']['tower_base']['log']:
                 outputs['damage_tower_base'] = np.log(outputs['damage_tower_base'])
 
-        return outputs
 
     def get_control_measures(self, inputs, outputs):
         '''
@@ -2773,7 +3487,6 @@ class FASTLoadCases(ExplicitComponent):
         else:
             logger.warning('openmdao_openfast warning: avg_pitch_travel, and pitch_duty_cycle require keep_time = True')
 
-        return outputs
 
     def get_floating_measures(self, inputs, outputs):
         '''
@@ -2790,7 +3503,6 @@ class FASTLoadCases(ExplicitComponent):
             outputs['Std_PtfmPitch'] = np.max(sum_stats['PtfmPitch']['std'])
         else:
             # Let's just average the standard deviation of PtfmPitch for now
-            # TODO: weight based on WS distribution, or something else
             outputs['Std_PtfmPitch'] = np.mean(sum_stats['PtfmPitch']['std'])
 
         outputs['Max_PtfmPitch']  = np.max(sum_stats['PtfmPitch']['max'])
@@ -2798,7 +3510,69 @@ class FASTLoadCases(ExplicitComponent):
         # Max platform offset        
         outputs['Max_Offset'] = np.max(sum_stats['PtfmOffset']['max'])
 
-        return outputs
+    
+    def get_signalperiods( self, outputs, discrete_outputs, method="peaks"):
+        """
+        Calculates the period of time domian signals
+
+        given:
+            - chan_time
+            - dlc_generator
+        """
+        signal_periods = {} # Dictionary to save the periods
+
+        # Skip if there are no free decay DLCs
+        dlc_names = [i_dlc['DLC'] for i_dlc in self.options['modeling_options']['DLC_driver']['DLCs']]
+        if 'freedecay' not in dlc_names:
+            return
+
+
+        # Channels to calculate periods of
+        period_channels = {
+            "initial_platform_roll":"PtfmRoll",
+            "initial_platform_pitch":"PtfmPitch",
+            "initial_platform_yaw":"PtfmYaw",
+            "initial_platform_surge":"PtfmSurge",
+            "initial_platform_sway":"PtfmSway",
+            "initial_platform_heave":"PtfmHeave",
+        }
+
+        for i,idlc in enumerate(self.options['modeling_options']['DLC_driver']['DLCs']):
+            if idlc['DLC'] == 'freedecay':
+                # Find the channel used for freedecay dlc ()
+                initcond_channels = []
+                for channel in period_channels:
+                    if idlc[channel] > 0:
+                        initcond_channels.append(channel)
+                if len(initcond_channels) > 1:
+                    logger.warning('WARNING: Freedecay DLCs have been run with more than one initial platform deflection, period calculations may be incorrect')
+
+                time = self.cruncher.outputs[i].time
+                dt = time[1]-time[0]
+
+                if method == "peaks":
+                    for channel in initcond_channels:
+                        signalidx = self.cruncher.outputs[i].channels.index(period_channels[channel])
+                        inds = sig.find_peaks(self.cruncher.outputs[i].data[:,signalidx],height = idlc[channel]/10,distance=5/dt)[0]
+                        if len(inds) < 2:
+                            logger.warning('WARNING: Signal periods cannot be calculated for freedecay DLCs as there are less than two peaks')
+                        else:
+                            peak_times = self.cruncher.outputs[i].time[inds]
+                            period = np.diff(peak_times).mean()
+                            signal_periods[f"DLC_{i}_{period_channels[channel]}"] = period
+                elif method == "fft":
+                    for channel in initcond_channels:
+                        signalidx = self.cruncher.outputs[i].channels.index(period_channels[channel])
+                        signal = self.cruncher.outputs[i].data[:,signalidx]
+                        Y = np.fft.fft(signal)
+                        freq = np.fft.fftfreq(len(signal), dt)
+                        peakfftidx = np.argmax(Y)
+                        peakfftfreq = abs(freq[peakfftidx])
+                        period = 1.0 / peakfftfreq
+                        signal_periods[f"DLC_{i}_{period_channels[channel]}"] = period
+                else:
+                    raise Exception("method needs to be 'peaks' or 'fft' for get_signalperiods")
+        discrete_outputs['signal_periods'] = signal_periods
 
     def get_OL2CL_error(self, outputs):
         ol_case_names = [os.path.join(
@@ -2827,15 +3601,14 @@ class FASTLoadCases(ExplicitComponent):
                 save_dir = os.path.join(self.FAST_runDirectory,'iteration_'+str(self.of_inumber),'timeseries')
                 pitch_error.to_pickle(os.path.join(save_dir,'pitch_error_'+ str(i_ts) + '.p'))
 
-        # Average over DLCs and return, TODO: weight in future?  only works for a few wind speeds currently
+        # Average over DLCs and return
         outputs['OL2CL_pitch'] = np.mean(rms_pitch_error)
-        return outputs
 
 
     def get_ac_axis(self, inputs):
         
         # Get the absolute offset between pitch axis (rotation center) and aerodynamic center
-        ch_offset = inputs['chord'] * (inputs['ac'] - inputs['le_location'])
+        ch_offset = inputs['chord']*inputs['ac'] - inputs['le_location']
         # Rotate it by the twist using the AD15 coordinate system
         x , y = util.rotate(0., 0., 0., ch_offset, -np.deg2rad(inputs['theta']))
         # Apply offset to determine the AC axis
@@ -2919,7 +3692,7 @@ class FASTLoadCases(ExplicitComponent):
 
         # Save each timeseries as a pickled dataframe
         for i_ts in range(self.cruncher.noutputs):
-            self.cruncher.outputs[i_ts].save( os.path.join(save_dir,f'{self.FAST_namingOut}_{i_ts}.p'))
+            self.cruncher.outputs[i_ts].save( os.path.join(save_dir,f'{self.case_name[i_ts]}.p'))
 
     def save_iterations(self, discrete_outputs):
         '''

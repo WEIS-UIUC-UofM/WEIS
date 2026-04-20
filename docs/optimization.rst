@@ -6,7 +6,7 @@ Optimization in WEIS
 WEIS is a platform for multidisciplinary analysis and optimization (MDAO),
 based on the OpenMDAO toolset. WEIS leverages the `optimization capabilities of OpenMDAO <https://openmdao.org/newdocs/versions/latest/features/building_blocks/drivers/index.html>`_
 and `extensions in WISDEM <https://wisdem.readthedocs.io/en/master/inputs/analysis_schema.html#driver>`_
-to perform multidisciplinary and multifidelity wind turbine analyses including controls.
+to perform multidisciplinary and multifidelity turbine analyses including controls.
 
 
 General Setup
@@ -25,7 +25,7 @@ WISDEM allows users to set design variables, figure of merit, and constraints fr
 
 In addition, WISDEM and WEIS now offer the option to build your own optimization problem by setting any available input as a design variable and any available output as either a constraint or a figure of merit. The WISDEM example #11 shows how to build your customized ``analysis_options.yaml``.
 
-The example is available in the WISDEM repo at https://github.com/WISDEM/WISDEM/tree/develop/examples/11_user_custom
+The example is available in the WISDEM repo at https://github.com/NLRWindSystems/WISDEM/tree/develop/examples/11_user_custom
 The example is explained at https://wisdem.readthedocs.io/en/latest/examples/11_user_custom/tutorial.html
 
 Users should not need to change anything in the inputs to run the example within WEIS. Simply activate your Conda environment and launch the python file.
@@ -205,7 +205,7 @@ In general, industrial use of optimization is a straightfoward two-step process:
 2) use them to arrive at the best possible design
 
 A goal of the WEIS project is to enable wider use of system-level optimization
-by industrial offshore wind practitioners.
+by industrial offshore practitioners.
 Towards this end, we can quantify two metrics of cost that are of key interest
 to practitioners, in order to better understand the tradeoffs implicit in
 running optimizations:

@@ -1,8 +1,5 @@
 '''
-Controller tuning script.
-
-Nikhar J. Abbas
-January 2020
+Controller tuning script.  OpenMDAO wrapper for ROSCO toolbox
 '''
 
 from rosco.toolbox import controller as ROSCO_controller
@@ -13,9 +10,14 @@ from rosco.toolbox.utilities import list_check, DISCON_dict
 import numpy as np
 from openmdao.api import ExplicitComponent, Group
 from wisdem.ccblade.ccblade import CCAirfoil, CCBlade
+from wisdem.inputs import load_yaml
 import yaml, os
+import logging
 
 weis_dir = os.path.realpath(os.path.join(os.path.dirname(__file__),'../..'))
+
+logger = logging.getLogger("wisdem/weis")
+
 
 class ServoSE_ROSCO(Group):
     def initialize(self):
@@ -94,13 +96,20 @@ class TuneROSCO(ExplicitComponent):
         self.add_input('gearbox_efficiency',val=1.0,                                desc='Gearbox efficiency')
         self.add_input('generator_efficiency', val=1.0,                  desc='Generator efficiency')
         self.add_input('TowerHt',           val=1.0,        units='m',              desc='Tower height')
-        # 
-        self.add_input('max_pitch',         val=0.0,        units='rad',            desc='')
-        self.add_input('min_pitch',         val=0.0,        units='rad',            desc='')
-        self.add_input('vs_minspd',         val=0.0,        units='rad/s',          desc='') 
-        self.add_input('ss_vsgain',         val=0.0,                                desc='')
-        self.add_input('ss_pcgain',         val=0.0,                                desc='')
-        self.add_input('ps_percent',        val=0.0,                                desc='')
+        # Optional params
+        self.optional_params = [
+            'max_pitch',
+            'min_pitch',
+            'vs_minspd',
+            'ss_vsgain',
+            'ss_pcgain',
+            'ps_percent',
+        ]
+
+        for param in self.optional_params:
+            if param in rosco_init_options:
+                self.add_input(param, val=rosco_init_options[param], desc='')
+
         # Rotor Power
         if self.modeling_options['WISDEM']['RotorSE']['flag']:
             self.n_pitch    = n_pitch   = rotorse_init_options['n_pitch_perf_surfaces']
@@ -124,7 +133,7 @@ class TuneROSCO(ExplicitComponent):
         # self.n_af       = n_af         = af_init_options['n_af'] # Number of airfoils
         self.n_aoa      = n_aoa        = rotorse_options['n_aoa']# Number of angle of attacks
         self.n_Re       = n_Re         = rotorse_options['n_Re'] # Number of Reynolds, so far hard set at 1
-        self.n_tab      = n_tab        = rotorse_options['n_tab']# Number of tabulated data. For distributed aerodynamic control this could be > 1
+        #self.n_tab      = n_tab        = rotorse_options['n_tab']# Number of tabulated data. For distributed aerodynamic control this could be > 1
         self.n_te_flaps = n_te_flaps   = rotorse_options['n_te_flaps']
         self.add_input('r',             val=np.zeros(n_span),               units='m',          desc='radial locations where blade is defined (should be increasing and not go all the way to hub or tip)')
         self.add_input('chord',         val=np.zeros(n_span),               units='m',          desc='chord length at each section')
@@ -139,12 +148,12 @@ class TuneROSCO(ExplicitComponent):
         self.add_input('precurveTip',   val=0.0,                            units='m',          desc='precurve at tip')
         self.add_input('presweep',      val=np.zeros(n_span),               units='m',          desc='presweep at each section')
         self.add_input('presweepTip',   val=0.0,                            units='m',          desc='presweep at tip')
-        self.add_input('airfoils_cl',   val=np.zeros((n_span, n_aoa, n_Re, n_tab)),             desc='lift coefficients, spanwise')
-        self.add_input('airfoils_cd',   val=np.zeros((n_span, n_aoa, n_Re, n_tab)),             desc='drag coefficients, spanwise')
-        self.add_input('airfoils_cm',   val=np.zeros((n_span, n_aoa, n_Re, n_tab)),             desc='moment coefficients, spanwise')
+        self.add_input('airfoils_cl',   val=np.zeros((n_span, n_aoa, n_Re)),             desc='lift coefficients, spanwise')
+        self.add_input('airfoils_cd',   val=np.zeros((n_span, n_aoa, n_Re)),             desc='drag coefficients, spanwise')
+        self.add_input('airfoils_cm',   val=np.zeros((n_span, n_aoa, n_Re)),             desc='moment coefficients, spanwise')
         self.add_input('airfoils_aoa',  val=np.zeros((n_aoa)),              units='deg',        desc='angle of attack grid for polars')
         self.add_input('airfoils_Re',   val=np.zeros((n_Re)),                                   desc='Reynolds numbers of polars')
-        self.add_input('airfoils_UserProp', val=np.zeros((n_span, n_Re, n_tab)), units='deg',       desc='Airfoil control paremeter (i.e. flap angle)')
+        self.add_input('airfoils_UserProp', val=np.zeros((n_span, n_Re)), units='deg',       desc='Airfoil control paremeter (i.e. flap angle)')
         self.add_discrete_input('nBlades',         val=0,                                       desc='number of blades')
         self.add_input('mu',            val=1.81e-5,                        units='kg/(m*s)',   desc='dynamic viscosity of air')
         self.add_input('shearExp',      val=0.0,                                                desc='shear exponent')
@@ -156,27 +165,56 @@ class TuneROSCO(ExplicitComponent):
         self.add_discrete_input('usecd',        val=True,                                       desc='use drag coefficient in computing induction factors')
 
         # Controller Tuning Parameters
+        
+        # Generic inputs
+        rosco_tuning_dvs = self.opt_options['design_variables']['control']['rosco_tuning']
+
+        for dv in rosco_tuning_dvs:
+            # TODO: support arrays
+            ivc_units = None
+            if 'units' in dv:
+                ivc_units = dv['units']
+
+            ivc_desc = None
+            if 'desc' in dv:
+                ivc_desc = dv['desc']
+
+            if dv['name'] in self.optional_params:
+                continue    # these are added as optional parameters above, so skip them here
+            self.add_input(dv['name'], val=dv['start'], units=ivc_units, desc=ivc_desc)
+
+        # Generic DISCON inputs
+        discon_dvs = self.opt_options['design_variables']['control']['discon']
+        for dv in discon_dvs:
+            ivc_units = None
+            if 'units' in dv:
+                ivc_units = dv['units']
+
+            ivc_desc = None
+            if 'description' in dv:
+                ivc_desc = dv['description']
+
+            self.add_input(f'discon:{dv["name"]}', val=dv['start'], units=ivc_units, desc=ivc_desc)
+
+        
+        
         if rosco_init_options['linmodel_tuning']['type'] == 'robust':
             n_PC = 1
         else:
             n_PC = len(rosco_init_options['U_pc'])
-        self.add_input('zeta_pc',           val=np.zeros(n_PC),                                 desc='Pitch controller damping ratio')
-        self.add_input('omega_pc',          val=np.zeros(n_PC),        units='rad/s',           desc='Pitch controller natural frequency')
+        
+        # Specific inputs, hardcoded
         self.add_input('stability_margin',  val=0.0,                                            desc='Maximum stability margin for robust scheduling')
         self.add_input('omega_pc_max',      val=0.0,                                            desc='Maximum allowable omega margin for robust scheduling')
         self.add_input('twr_freq',          val=0.0,        units='Hz',                         desc='Tower natural frequency')
-        self.add_input('ptfm_freq',         val=0.0,        units='rad/s',                      desc='Platform natural frequency')
-        self.add_output('VS_Kp',            val=0.0,        units='s',                          desc='Generator torque control proportional gain at first point in schedule')
-        self.add_output('VS_Ki',            val=0.0,                                            desc='Generator torque control integral gain at first point in schedule')
-        self.add_input('Kp_float',          val=0.0,        units='s',                          desc='Floating feedback gain')
-        self.add_input('zeta_vs',           val=0.0,                                            desc='Generator torque controller damping ratio')
-        self.add_input('omega_vs',          val=0.0,        units='rad/s',                      desc='Generator torque controller natural frequency')
+
         if rosco_init_options['Flp_Mode'] > 0:
             self.add_input('flp_kp_norm',   val=0.0,                                    desc='Flap controller normalized gain')
             self.add_input('flp_tau',       val=0.0,            units='s',              desc='Flap controller integral gain time constant')
-        self.add_input('IPC_Kp1p',          val=0.0,            units='s',              desc='Individual pitch controller 1p proportional gain')
-        self.add_input('IPC_Ki1p',          val=0.0,                                    desc='Individual pitch controller 1p integral gain')
+
         # Outputs for constraints and optimizations
+        self.add_output('VS_Kp',            val=0.0,        units='s',                          desc='Generator torque control proportional gain at first point in schedule')
+        self.add_output('VS_Ki',            val=0.0,                                            desc='Generator torque control integral gain at first point in schedule')
         self.add_output('flptune_coeff1',   val=0.0,            units='rad/s',          desc='First coefficient in denominator of flap controller tuning model')
         self.add_output('flptune_coeff2',   val=0.0,            units='(rad/s)**2',     desc='Second coefficient in denominator of flap controller tuning model')
         self.add_output('PC_Kp',            val=0.0,            units='rad',            desc='Pitch control proportional gain at first pitch angle in schedule')
@@ -197,34 +235,42 @@ class TuneROSCO(ExplicitComponent):
         '''
         rosco_init_options   = self.modeling_options['ROSCO']
         # Add control tuning parameters to dictionary
-        rosco_init_options['omega_pc']    = inputs['omega_pc'].tolist()
-        rosco_init_options['zeta_pc']     = inputs['zeta_pc'].tolist()
-        rosco_init_options['omega_vs']    = float(inputs['omega_vs'][0])
-        rosco_init_options['zeta_vs']     = float(inputs['zeta_vs'][0])
+
+        # Speicifc parameters
         if rosco_init_options['Flp_Mode'] > 0:
             rosco_init_options['flp_kp_norm'] = float(inputs['flp_kp_norm'][0])
             rosco_init_options['flp_tau']  = float(inputs['flp_tau'][0])
         else:
             rosco_init_options['omega_flp'] = 0.0
             rosco_init_options['zeta_flp']  = 0.0
-        rosco_init_options['max_pitch']   = float(inputs['max_pitch'][0])
-        rosco_init_options['min_pitch']   = float(inputs['min_pitch'][0])
-        rosco_init_options['vs_minspd']   = float(inputs['vs_minspd'][0])
-        rosco_init_options['ss_vsgain']   = float(inputs['ss_vsgain'][0])
-        rosco_init_options['ss_pcgain']   = float(inputs['ss_pcgain'][0])
-        rosco_init_options['ps_percent']  = float(inputs['ps_percent'][0])
-        rosco_init_options['IPC_Kp1p']    = max(0.0, float(inputs['IPC_Kp1p'][0]))
-        rosco_init_options['IPC_Ki1p']    = max(0.0, float(inputs['IPC_Ki1p'][0]))
-        rosco_init_options['IPC_Kp2p']    = 0.0 # 2P optimization is not currently supported
-        rosco_init_options['IPC_Kp2p']    = 0.0
+
+        for param in self.optional_params:
+            if param in rosco_init_options:
+                rosco_init_options[param] = float(inputs[param][0])
+
+
+        rosco_init_options['twr_freq']    = float(inputs['twr_freq'][0]) * 2 * np.pi   # ROSCO wants rad/s
 
         if rosco_init_options['Flp_Mode'] > 0:
             rosco_init_options['flp_maxpit']  = float(inputs['delta_max_pos'][0])
 
-        # If Kp_float is a design variable, do not automatically tune i
-        if self.opt_options['design_variables']['control']['servo']['pitch_control']['Kp_float']['flag']:
-            rosco_init_options['Kp_float'] = float(inputs['Kp_float'][0])
+        # If Kp_float is a design variable, do not automatically tune it
+        dv_names = [dv['name'] for dv in self.opt_options['design_variables']['control']['rosco_tuning']]
+        if 'Kp_float' in dv_names:
             rosco_init_options['tune_Fl'] = False
+
+        # Generic inputs
+        rosco_tuning_dvs = self.opt_options['design_variables']['control']['rosco_tuning']
+        for dv in rosco_tuning_dvs:
+            if len(inputs[dv['name']]) > 1:
+                rosco_init_options[dv['name']] = inputs[dv['name']]
+            else:
+                rosco_init_options[dv['name']] = float(inputs[dv['name']][0])
+
+        # Generic DISCON Inputs
+        discon_dvs = self.opt_options['design_variables']['control']['discon']
+        for dv in discon_dvs:
+            rosco_init_options['DISCON'][dv['name']] = inputs[f'discon:{dv["name"]}']
 
         # Define necessary turbine parameters
         WISDEM_turbine = type('', (), {})()
@@ -246,14 +292,15 @@ class TuneROSCO(ExplicitComponent):
         WISDEM_turbine.max_pitch_rate   = float(inputs['max_pitch_rate'][0])
         WISDEM_turbine.min_pitch_rate   = -float(inputs['max_pitch_rate'][0])
         WISDEM_turbine.TSR_operational  = float(inputs['tsr_operational'][0])
-        WISDEM_turbine.max_torque_rate  = float(inputs['max_torque_rate'][0])
         WISDEM_turbine.TowerHt          = float(inputs['TowerHt'][0])
         WISDEM_turbine.bld_edgewise_freq = float(inputs['edge_freq'][0]) * 2 * np.pi
+
+        if inputs['max_torque_rate'][0] > 0:
+            WISDEM_turbine.max_torque_rate  = float(inputs['max_torque_rate'][0])
+        else:
+            logger.warning("No max_torque_rate defined.  It's being set to 1/4 of the rated torque per second")
+            WISDEM_turbine.max_torque_rate  = WISDEM_turbine.rated_torque / 4  
         
-        # Floating Feedback Filters
-        if self.controller_params['Fl_Mode']:
-            rosco_init_options['twr_freq'] = float(inputs['twr_freq'][0]) * 2 * np.pi
-            rosco_init_options['ptfm_freq'] = float(inputs['ptfm_freq'][0])
 
         # Load Cp tables
         self.Cp_table       = WISDEM_turbine.Cp_table = np.squeeze(inputs['Cp_table'])
@@ -276,11 +323,7 @@ class TuneROSCO(ExplicitComponent):
             # Create airfoils
             af = [None]*self.n_span
             for i in range(self.n_span):
-                if self.n_tab > 1:
-                    ref_tab = int(np.floor(self.n_tab/2))
-                    af[i] = CCAirfoil(inputs['airfoils_aoa'], inputs['airfoils_Re'], inputs['airfoils_cl'][i,:,:,ref_tab], inputs['airfoils_cd'][i,:,:,ref_tab], inputs['airfoils_cm'][i,:,:,ref_tab])
-                else:
-                    af[i] = CCAirfoil(inputs['airfoils_aoa'], inputs['airfoils_Re'], inputs['airfoils_cl'][i,:,:,0], inputs['airfoils_cd'][i,:,:,0], inputs['airfoils_cm'][i,:,:,0])
+                af[i] = CCAirfoil(inputs['airfoils_aoa'], inputs['airfoils_Re'], inputs['airfoils_cl'][i,:,:], inputs['airfoils_cd'][i,:,:], inputs['airfoils_cm'][i,:,:])
             
             # Initialize CCBlade as cc_rotor object 
             WISDEM_turbine.cc_rotor = CCBlade(inputs['r'], inputs['chord'], inputs['theta'], af, inputs['Rhub'][0], inputs['Rtip'][0], discrete_inputs['nBlades'], inputs['rho'][0], inputs['mu'][0], inputs['precone'][0], inputs['tilt'][0], inputs['yaw'][0], inputs['shearExp'][0], inputs['hub_height'][0], discrete_inputs['nSector'], inputs['precurve'], inputs['precurveTip'][0],inputs['presweep'], inputs['presweepTip'][0], discrete_inputs['tiploss'], discrete_inputs['hubloss'],discrete_inputs['wakerotation'], discrete_inputs['usecd'])
@@ -288,23 +331,13 @@ class TuneROSCO(ExplicitComponent):
             # Load aerodynamic performance data for blades
             WISDEM_turbine.af_data = [{} for i in range(self.n_span)]
             for i in range(self.n_span):
-                # Check number of flap positions for each airfoil section
-                if self.n_tab > 1:
-                    if inputs['airfoils_UserProp'][i,0,0] == inputs['airfoils_UserProp'][i,0,1]:
-                        n_tabs = 1  # If all UserProp angles of the flaps are identical then no flaps
-                    else:
-                        n_tabs = self.n_tab
-                else:
-                    n_tabs = 1
                 # Save data for each flap position
-                for j in range(n_tabs):
-                    WISDEM_turbine.af_data[i][j] = {}
-                    WISDEM_turbine.af_data[i][j]['NumTabs'] = n_tabs
-                    WISDEM_turbine.af_data[i][j]['UserProp']    = inputs['airfoils_UserProp'][i,0,j]
-                    WISDEM_turbine.af_data[i][j]['Alpha']   = np.array(inputs['airfoils_aoa']).flatten().tolist()
-                    WISDEM_turbine.af_data[i][j]['Cl']      = np.array(inputs['airfoils_cl'][i,:,0,j]).flatten().tolist()
-                    WISDEM_turbine.af_data[i][j]['Cd']      = np.array(inputs['airfoils_cd'][i,:,0,j]).flatten().tolist()
-                    WISDEM_turbine.af_data[i][j]['Cm']      = np.array(inputs['airfoils_cm'][i,:,0,j]).flatten().tolist()
+                WISDEM_turbine.af_data[i] = {}
+                WISDEM_turbine.af_data[i]['UserProp']    = inputs['airfoils_UserProp'][i,0]
+                WISDEM_turbine.af_data[i]['Alpha']   = np.array(inputs['airfoils_aoa']).flatten().tolist()
+                WISDEM_turbine.af_data[i]['Cl']      = np.array(inputs['airfoils_cl'][i,:,0]).flatten().tolist()
+                WISDEM_turbine.af_data[i]['Cd']      = np.array(inputs['airfoils_cd'][i,:,0]).flatten().tolist()
+                WISDEM_turbine.af_data[i]['Cm']      = np.array(inputs['airfoils_cm'][i,:,0]).flatten().tolist()
    
             # Save some more airfoil info
             WISDEM_turbine.span     = inputs['r'] 
@@ -411,7 +444,6 @@ class Cp_Ct_Cq_Tables(ExplicitComponent):
         self.n_span        = n_span    = rotorse_options['n_span']
         self.n_aoa         = n_aoa     = rotorse_options['n_aoa']# Number of angle of attacks
         self.n_Re          = n_Re      = rotorse_options['n_Re'] # Number of Reynolds, so far hard set at 1
-        self.n_tab         = n_tab     = rotorse_options['n_tab']# Number of tabulated data. For distributed aerodynamic control this could be > 1
         self.n_pitch       = n_pitch   = rotorse_options['n_pitch_perf_surfaces']
         self.n_tsr         = n_tsr     = rotorse_options['n_tsr_perf_surfaces']
         self.n_U           = n_U       = rotorse_options['n_U_perf_surfaces']
@@ -440,9 +472,9 @@ class Cp_Ct_Cq_Tables(ExplicitComponent):
         self.add_input('mu',            val=1.81e-5,            units='kg/(m*s)',   desc='dynamic viscosity of air')
         self.add_input('shearExp',      val=0.0,                                desc='shear exponent')
         # self.add_discrete_input('airfoils',      val=[0]*n_span,                 desc='CCAirfoil instances')
-        self.add_input('airfoils_cl', val=np.zeros((n_span, n_aoa, n_Re, n_tab)), desc='lift coefficients, spanwise')
-        self.add_input('airfoils_cd', val=np.zeros((n_span, n_aoa, n_Re, n_tab)), desc='drag coefficients, spanwise')
-        self.add_input('airfoils_cm', val=np.zeros((n_span, n_aoa, n_Re, n_tab)), desc='moment coefficients, spanwise')
+        self.add_input('airfoils_cl', val=np.zeros((n_span, n_aoa, n_Re)), desc='lift coefficients, spanwise')
+        self.add_input('airfoils_cd', val=np.zeros((n_span, n_aoa, n_Re)), desc='drag coefficients, spanwise')
+        self.add_input('airfoils_cm', val=np.zeros((n_span, n_aoa, n_Re)), desc='moment coefficients, spanwise')
         self.add_input('airfoils_aoa', val=np.zeros((n_aoa)), units='deg', desc='angle of attack grid for polars')
         self.add_input('airfoils_Re', val=np.zeros((n_Re)), desc='Reynolds numbers of polars')
         self.add_discrete_input('nBlades',       val=0,                         desc='number of blades')
@@ -468,11 +500,7 @@ class Cp_Ct_Cq_Tables(ExplicitComponent):
         # Create Airfoil class instances
         af = [None]*self.n_span
         for i in range(self.n_span):
-            if self.n_tab > 1:
-                ref_tab = int(np.floor(self.n_tab/2))
-                af[i] = CCAirfoil(inputs['airfoils_aoa'], inputs['airfoils_Re'], inputs['airfoils_cl'][i,:,:,ref_tab], inputs['airfoils_cd'][i,:,:,ref_tab], inputs['airfoils_cm'][i,:,:,ref_tab])
-            else:
-                af[i] = CCAirfoil(inputs['airfoils_aoa'], inputs['airfoils_Re'], inputs['airfoils_cl'][i,:,:,0], inputs['airfoils_cd'][i,:,:,0], inputs['airfoils_cm'][i,:,:,0])
+            af[i] = CCAirfoil(inputs['airfoils_aoa'], inputs['airfoils_Re'], inputs['airfoils_cl'][i,:,:], inputs['airfoils_cd'][i,:,:], inputs['airfoils_cm'][i,:,:])
 
         n_pitch    = self.n_pitch
         n_tsr      = self.n_tsr
@@ -525,7 +553,7 @@ class ROSCO_Turbine(ExplicitComponent):
         
         parameter_filename = modeling_options['ROSCO']['tuning_yaml']
         if parameter_filename == 'none':
-            raise Exception('A ROSCO tuning_yaml must be specified in the modeling_options if from_OpenFAST is True')
+            raise Exception('A ROSCO tuning_yaml must be specified in the modeling_options if tuning rosco from an OpenFAST model')
 
         inps = load_rosco_yaml(parameter_filename, rank_0=True)
         self.turbine_params         = inps['turbine_params']
@@ -615,4 +643,19 @@ class ROSCO_Turbine(ExplicitComponent):
         outputs['pitch_vector'           ] = self.turbine.Cp.pitch_initial_rad
         outputs['tsr_vector'             ] = self.turbine.Cp.TSR_initial
         outputs['U_vector'               ] = np.array([5])
+
+def update_rosco_options(modeling_options):
+    inps = load_rosco_yaml(modeling_options['ROSCO']['tuning_yaml'])  # tuning yaml validated in here
+    modeling_options['ROSCO'].update(inps['controller_params'])
+
+    # Apply changes in modeling options, should have already been validated
+    modopts_no_defaults = load_yaml(modeling_options['fname_input_modeling'])  
+    skip_options = ['tuning_yaml','DISCON']  # Options to skip loading, tuning_yaml path has been updated, don't overwrite
+    for option, value in modopts_no_defaults['ROSCO'].items():
+        if option not in skip_options:
+            modeling_options['ROSCO'][option] = value
+    # Handle DISCON inputs separately
+    if 'DISCON' in modopts_no_defaults['ROSCO']:
+        for option, value in modopts_no_defaults['ROSCO']['DISCON'].items():
+            modeling_options['ROSCO']['DISCON'][option] = value
 

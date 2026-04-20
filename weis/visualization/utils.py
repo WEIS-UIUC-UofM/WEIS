@@ -114,7 +114,7 @@ def dict_to_html(data, out_html_list, level):
 def read_cm(cm_file):
     """
     Function originally from:
-    https://github.com/WISDEM/WEIS/blob/main/examples/16_postprocessing/rev_DLCs_WEIS.ipynb
+    https://github.com/NLRWindSystems/WEIS/blob/main/examples/16_postprocessing/rev_DLCs_WEIS.ipynb
 
     Parameters
     __________
@@ -139,7 +139,7 @@ def read_cm(cm_file):
 def parse_contents(data):
     """
     Function from:
-    https://github.com/WISDEM/WEIS/blob/main/examples/09_design_of_experiments/postprocess_results.py
+    https://github.com/NLRWindSystems/WEIS/blob/main/examples/09_design_of_experiments/postprocess_results.py
     """
     collected_data = {}
     for key in data.keys():
@@ -600,7 +600,7 @@ def toggle(click, is_open):
 def store_dataframes(var_files):
     dfs = {}
     for _, file_path in var_files.items():
-        df = pd.read_csv(file_path, skiprows=[0,1,2,3,4,5,7], sep='\s+')
+        df = pd.read_csv(file_path, skiprows=[0,1,2,3,4,5,7], sep=r'\s')
         dfs[file_path] = df.to_dict('records')
     
     return dfs
